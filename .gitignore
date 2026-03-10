@@ -15,4 +15,5 @@ venv/
 .vscode/
 *.swp
 *.swo
+*.spec
 .text2xyq/
