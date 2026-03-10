@@ -64,11 +64,19 @@ NARRATION_STYLES = ["第三人称旁白", "第一人称独白", "对话为主", 
 PACINGS = ["快节奏", "中等", "慢节奏"]
 
 AVAILABLE_MODELS = [
+    # 商业版
     "qwen3-max",
     "qwen-max",
+    "qwen3.5-plus",
     "qwen-plus",
+    "qwen3.5-flash",
     "qwen-turbo",
     "qwen-long",
+    "qwq-plus",
+    # 开源版
+    "qwen3.5-397b-a17b",
+    "qwen3-32b",
+    "qwen2.5-72b-instruct",
 ]
 
 # 换算系数：约 3 个中文字符 ≈ 1 秒视频（旁白语速）
