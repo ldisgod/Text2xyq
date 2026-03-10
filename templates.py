@@ -157,10 +157,6 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "\n"
         "【场景】[时间·地点·氛围，15字以内]\n"
         "\n"
-        "【视觉档案】\n"
-        "从角色视觉档案中提取本集分镜涉及的角色与物品的视觉描述，仅列出本集出现的角色/物品，不要全部罗列。"
-        "如果没有角色视觉档案则省略此段。\n"
-        "\n"
         "【分镜】\n"
         "①（Xs）画面：[动作/构图] | 旁白：[旁白文字或「无」] | 音效：[音效或「无」] | 光线：[光线描述]\n"
         "②（Xs）画面：... | 旁白：... | 音效：... | 光线：...\n"
@@ -306,3 +302,60 @@ def get_default_template(name: str) -> str:
 
 def get_template_names() -> list[str]:
     return list(DEFAULT_TEMPLATES.keys())
+
+
+# ---------------------------------------------------------------------------
+# 角色视觉档案：解析、提取、注入
+# ---------------------------------------------------------------------------
+
+def parse_character_profiles(profile_text: str) -> dict[str, str]:
+    """将视觉档案原文解析为 {角色名: 档案原文块} 字典。
+
+    支持多种 LLM 输出格式：
+      **【云灰】**、【云灰】、**【云灰】、---\\n【云灰】 等。
+    """
+    if not profile_text or not profile_text.strip():
+        return {}
+
+    pattern = r'(?:^|\n)\s*(?:-{3,}\s*\n\s*)?(\*{0,2})\s*【([^】]+)】\s*\1[^\S\n]*'
+    matches = list(re.finditer(pattern, profile_text))
+    if not matches:
+        return {}
+
+    result: dict[str, str] = {}
+    for i, m in enumerate(matches):
+        name = m.group(2).strip()
+        start = m.start()
+        if start < len(profile_text) and profile_text[start] == '\n':
+            start += 1
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(profile_text)
+        block = profile_text[start:end].rstrip()
+        result[name] = block
+
+    return result
+
+
+def extract_episode_profiles(
+    parsed_profiles: dict[str, str],
+    episode_text: str,
+) -> str:
+    """从已解析的档案中提取 episode_text 里出现的角色，返回拼接后的原文。"""
+    if not parsed_profiles or not episode_text:
+        return ""
+    matched = [block for name, block in parsed_profiles.items()
+               if name in episode_text]
+    return "\n\n".join(matched)
+
+
+def inject_visual_profiles(episode_text: str, profiles_text: str) -> str:
+    """将视觉档案原文插入到【场景】与【分镜】之间。"""
+    if not profiles_text:
+        return episode_text
+
+    visual_section = f"【视觉档案】\n{profiles_text}"
+
+    idx = episode_text.find("【分镜】")
+    if idx != -1:
+        return episode_text[:idx] + visual_section + "\n\n" + episode_text[idx:]
+
+    return episode_text + "\n\n" + visual_section

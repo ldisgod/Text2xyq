@@ -142,10 +142,31 @@ class TemplateEditorDialog(tk.Toplevel):
 
 class App(tk.Tk):
 
+    # 配色方案
+    _C_PRIMARY = "#2563EB"      # 蓝 — 主操作
+    _C_PRIMARY_HOVER = "#1D4ED8"
+    _C_PRIMARY_DIS = "#93C5FD"
+    _C_ACCENT = "#6366F1"       # 靛 — 强调
+    _C_ACCENT_HOVER = "#4F46E5"
+    _C_ACCENT_DIS = "#A5B4FC"
+    _C_BG_DARK = "#1E293B"      # 深色背景
+    _C_BG_CARD = "#F8FAFC"      # 卡片底色
+    _C_BORDER = "#E2E8F0"
+    _C_TEXT_SEC = "#64748B"      # 次要文字
+
     def __init__(self):
+        # Windows 高 DPI 适配
+        if sys.platform == "win32":
+            try:
+                from ctypes import windll
+                windll.shcore.SetProcessDpiAwareness(1)
+            except Exception:
+                pass
+
         super().__init__()
         self.title("Text2xyq · 小云雀剧本生成器")
         self.minsize(480, 360)
+        self._setup_styles()
 
         self._llm_cfg = config.load_llm()
         self._gen_params = config.load_generation_params()
@@ -164,6 +185,57 @@ class App(tk.Tk):
             self.after(100, self._auto_validate)
 
     # ==================================================================
+    # 主题与样式
+    # ==================================================================
+
+    def _setup_styles(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        # 全局字体
+        _FONT = ("TkDefaultFont", 10)
+        _FONT_BOLD = ("TkDefaultFont", 10, "bold")
+
+        style.configure(".", font=_FONT)
+        style.configure("TLabelframe.Label", font=_FONT_BOLD,
+                         foreground="#334155")
+
+        # 主操作按钮（一键生成全部）
+        style.configure("Primary.TButton",
+                         background=self._C_PRIMARY, foreground="white",
+                         font=_FONT_BOLD, padding=(12, 8))
+        style.map("Primary.TButton",
+                  background=[("active", self._C_PRIMARY_HOVER),
+                              ("disabled", self._C_PRIMARY_DIS)],
+                  foreground=[("disabled", "#F0F0F0")])
+
+        # 强调按钮（验证并进入）
+        style.configure("Accent.TButton",
+                         background=self._C_ACCENT, foreground="white",
+                         font=("TkDefaultFont", 11, "bold"), padding=(20, 10))
+        style.map("Accent.TButton",
+                  background=[("active", self._C_ACCENT_HOVER),
+                              ("disabled", self._C_ACCENT_DIS)],
+                  foreground=[("disabled", "#F0F0F0")])
+
+        # 进度条
+        style.configure("TProgressbar",
+                         troughcolor="#E5E7EB", background=self._C_PRIMARY)
+
+        # 配置页标题
+        style.configure("Title.TLabel",
+                         font=("TkDefaultFont", 20, "bold"),
+                         foreground=self._C_BG_DARK)
+        style.configure("Subtitle.TLabel",
+                         font=("TkDefaultFont", 10),
+                         foreground=self._C_TEXT_SEC)
+
+        # 状态栏
+        style.configure("Status.TLabel",
+                         font=("TkDefaultFont", 9),
+                         foreground=self._C_TEXT_SEC)
+
+    # ==================================================================
     # 配置页
     # ==================================================================
 
@@ -172,11 +244,11 @@ class App(tk.Tk):
 
         ttk.Label(
             page, text="Text2xyq · 小云雀剧本生成器",
-            font=("TkDefaultFont", 18, "bold"),
+            style="Title.TLabel",
         ).pack(pady=(20, 8))
         ttk.Label(
             page, text="请配置 LLM 连接信息，验证通过后进入主界面",
-            foreground="gray",
+            style="Subtitle.TLabel",
         ).pack(pady=(0, 24))
 
         form = ttk.Frame(page)
@@ -209,8 +281,10 @@ class App(tk.Tk):
 
         form.columnconfigure(1, weight=1)
 
-        self._cfg_btn = ttk.Button(page, text="验证并进入", command=self._on_validate)
-        self._cfg_btn.pack(pady=(24, 8), ipadx=20, ipady=4)
+        self._cfg_btn = ttk.Button(page, text="验证并进入",
+                                    command=self._on_validate,
+                                    style="Accent.TButton")
+        self._cfg_btn.pack(pady=(24, 8))
 
         self._cfg_status_var = tk.StringVar(value="")
         self._cfg_status_lbl = ttk.Label(
@@ -391,15 +465,16 @@ class App(tk.Tk):
         self._btn_episodes.pack(fill=tk.X, padx=4, pady=2, ipady=4)
 
         self._btn_all = ttk.Button(
-            parent, text="一键生成全部", command=self._on_generate_all)
-        self._btn_all.pack(fill=tk.X, padx=4, pady=2, ipady=4)
+            parent, text="一键生成全部", command=self._on_generate_all,
+            style="Primary.TButton")
+        self._btn_all.pack(fill=tk.X, padx=4, pady=(6, 2))
 
         self._progress = ttk.Progressbar(parent, mode="determinate", maximum=100)
-        self._progress.pack(fill=tk.X, padx=4, pady=(6, 2))
+        self._progress.pack(fill=tk.X, padx=4, pady=(8, 2))
 
         self._status_var = tk.StringVar(value="就绪")
         ttk.Label(parent, textvariable=self._status_var,
-                  foreground="gray").pack(anchor="w", padx=4)
+                  style="Status.TLabel").pack(anchor="w", padx=4)
 
     # ---- 选材设定 ----
 
@@ -502,7 +577,7 @@ class App(tk.Tk):
         ttk.Label(range_frame, text=" 字").pack(side=tk.LEFT)
         r += 1
 
-        self._duration_label = ttk.Label(f, text="", foreground="#666")
+        self._duration_label = ttk.Label(f, text="", style="Status.TLabel")
         self._duration_label.grid(
             row=r, column=0, columnspan=2, sticky="w", pady=(2, 4))
 
@@ -576,8 +651,8 @@ class App(tk.Tk):
         profile_bar.pack(fill=tk.X, pady=(4, 0))
         ttk.Label(
             profile_bar,
-            text="档案会自动注入到每集分镜提示词，确保角色外貌一致",
-            foreground="#888",
+            text="档案会按角色自动提取并注入到每集脚本，确保视觉描述逐字一致",
+            style="Status.TLabel",
         ).pack(side=tk.LEFT, padx=4)
 
         ef = ttk.LabelFrame(parent, text="各集分镜脚本（供小云雀使用）", padding=6)
@@ -586,7 +661,7 @@ class App(tk.Tk):
             ef, wrap=tk.WORD, font=("TkDefaultFont", 10), state="disabled")
         self._episode_box.pack(fill=tk.BOTH, expand=True)
 
-        self._stats_label = ttk.Label(ef, text="", foreground="#666")
+        self._stats_label = ttk.Label(ef, text="", style="Status.TLabel")
         self._stats_label.pack(anchor="w", pady=(4, 0))
 
         bar = ttk.Frame(ef)
@@ -828,6 +903,10 @@ class App(tk.Tk):
         chars_max = int(slots["chars_max"])
         chars_target = (chars_min + chars_max) // 2
 
+        # 预解析角色视觉档案 → {角色名: 原文块}
+        parsed_profiles = templates.parse_character_profiles(
+            slots.get("character_profile", ""))
+
         results: list[tuple[int, int, bool]] = []  # (ep_num, char_count, accepted)
 
         def task():
@@ -867,6 +946,12 @@ class App(tk.Tk):
                         if chars_min <= count <= chars_max:
                             accepted = True
                             break
+
+                    # 代码层面提取并注入视觉档案（逐字原文，保证跨集一致）
+                    relevant = templates.extract_episode_profiles(
+                        parsed_profiles, best_text)
+                    best_text = templates.inject_visual_profiles(
+                        best_text, relevant)
 
                     # 输出到文本框
                     warning = (
