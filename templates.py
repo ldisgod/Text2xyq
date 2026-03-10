@@ -57,12 +57,11 @@ CHARACTER_TYPES_MAP: dict[str, list[str]] = {
     ],
 }
 
-VISUAL_STYLES = ["写实", "动漫", "水墨", "赛博朋克", "复古胶片", "梦幻", "极简"]
+VISUAL_STYLES = ["写实", "动漫", "水墨", "赛博朋克", "复古胶片", "梦幻", "极简", "AI仿真"]
 ASPECT_RATIOS = ["9:16竖屏", "16:9横屏", "1:1方形"]
 MOODS = ["自动", "温馨", "紧张", "搞笑", "悲伤", "热血", "治愈", "悬疑"]
 NARRATION_STYLES = ["第三人称旁白", "第一人称独白", "对话为主", "纯画面无旁白"]
 PACINGS = ["快节奏", "中等", "慢节奏"]
-PLATFORMS = ["抖音", "快手", "小红书", "B站", "视频号"]
 
 AVAILABLE_MODELS = [
     "qwen3-max",
@@ -108,7 +107,7 @@ DEFAULT_TEMPLATES: dict[str, str] = {
     ),
 
     "outline_system": (
-        "你是一位专业的短视频剧本策划师，擅长创作适合${target_platform}平台的短视频连续剧剧本大纲。\n"
+        "你是一位专业的短视频剧本策划师，擅长创作短视频连续剧剧本大纲。\n"
         "\n"
         "## 创作风格要求\n"
         "- 画面风格：${visual_style}\n"
@@ -129,8 +128,6 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "- 故事风格：${style}\n"
         "- 主角形象：${character_type}\n"
         "- 核心剧情：${plot}\n"
-        "${character_description_section}\n"
-        "${forbidden_content_section}\n"
         "\n"
         "【要求】\n"
         "1. 输出整体故事大纲：背景设定、主要人物、核心冲突、故事走向、结局方向。\n"
@@ -144,7 +141,7 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "你是专业短视频分镜编剧，为「小云雀」AI视频软件创作分镜脚本。\n"
         "\n"
         "## 字数约束（最重要）\n"
-        "每集脚本总字数严格控制在 ${chars_min}~${chars_max} 字（目标 ${chars_per_episode} 字）。\n"
+        "每集脚本总字数严格控制在 ${chars_min}~${chars_max} 字。\n"
         "字数直接决定视频时长（约 3 字/秒），超出或低于范围均会影响成片效果。\n"
         "\n"
         "## 风格要求\n"
@@ -152,9 +149,7 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "- 画面比例：${aspect_ratio}\n"
         "- 情绪基调：${mood}\n"
         "- 叙事方式：${narration_style}\n"
-        "- 目标平台：${target_platform}\n"
         "${protagonist_constraint_section}\n"
-        "${forbidden_content_section}\n"
         "${character_profile_section}\n"
         "\n"
         "## 输出格式（每集严格遵循）\n"
@@ -162,9 +157,13 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "\n"
         "【场景】[时间·地点·氛围，15字以内]\n"
         "\n"
+        "【视觉档案】\n"
+        "从角色视觉档案中提取本集分镜涉及的角色与物品的视觉描述，仅列出本集出现的角色/物品，不要全部罗列。"
+        "如果没有角色视觉档案则省略此段。\n"
+        "\n"
         "【分镜】\n"
-        "①（Xs）画面：[动作/构图] | 旁白：[旁白文字或「无」] | 音效：[音效或「无」]\n"
-        "②（Xs）画面：... | 旁白：... | 音效：...\n"
+        "①（Xs）画面：[动作/构图] | 旁白：[旁白文字或「无」] | 音效：[音效或「无」] | 光线：[光线描述]\n"
+        "②（Xs）画面：... | 旁白：... | 音效：... | 光线：...\n"
         "（根据总时长安排合理分镜数，每镜 3~6 秒）\n"
         "\n"
         "【集末悬念】[一句话勾住下集，20字以内]"
@@ -174,12 +173,10 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "故事大纲：\n"
         "${outline}\n"
         "\n"
-        "${character_description_section}\n"
-        "\n"
         "---\n"
         "当前任务：请为第 ${current_episode} 集（共 ${episode_count} 集）编写完整分镜脚本。\n"
         "\n"
-        "字数要求：${chars_min}~${chars_max} 字（目标 ${chars_per_episode} 字 ≈ ${episode_duration_seconds} 秒）\n"
+        "字数要求：${chars_min}~${chars_max} 字（≈ ${episode_duration_seconds} 秒）\n"
         "${retry_note}\n"
         "\n"
         "请直接输出第 ${current_episode} 集的分镜脚本，不要任何额外说明。"
@@ -200,7 +197,6 @@ SLOT_REFERENCE: dict[str, list[tuple[str, str]]] = {
         ("${character_type}", "主角形象"),
     ],
     "outline_system": [
-        ("${target_platform}", "目标平台"),
         ("${visual_style}", "画面风格"),
         ("${aspect_ratio}", "画面比例"),
         ("${mood}", "情绪基调"),
@@ -215,30 +211,24 @@ SLOT_REFERENCE: dict[str, list[tuple[str, str]]] = {
         ("${character_type}", "主角形象"),
         ("${plot}", "核心剧情"),
         ("${episode_duration_seconds}", "每集预计时长(秒)"),
-        ("${character_description_section}", "角色设定段落（非空时生成）"),
-        ("${forbidden_content_section}", "禁止内容段落（非空时生成）"),
     ],
     "episode_system": [
-        ("${chars_per_episode}", "每集目标字数"),
-        ("${chars_min}", "最小字数（目标×0.9）"),
-        ("${chars_max}", "最大字数（目标×1.1）"),
+        ("${chars_min}", "最小字数（用户配置）"),
+        ("${chars_max}", "最大字数（用户配置）"),
         ("${visual_style}", "画面风格"),
         ("${aspect_ratio}", "画面比例"),
         ("${mood}", "情绪基调"),
         ("${narration_style}", "旁白风格"),
-        ("${target_platform}", "目标平台"),
         ("${protagonist_constraint_section}", "宠物约束段落"),
-        ("${forbidden_content_section}", "禁止内容段落"),
+        ("${character_profile_section}", "角色视觉档案（自动注入）"),
     ],
     "episode_user": [
         ("${outline}", "故事大纲（自动填入）"),
         ("${current_episode}", "当前集号"),
         ("${episode_count}", "总集数"),
-        ("${chars_per_episode}", "每集目标字数"),
         ("${chars_min}", "最小字数"),
         ("${chars_max}", "最大字数"),
         ("${episode_duration_seconds}", "每集预计时长(秒)"),
-        ("${character_description_section}", "角色设定段落"),
         ("${retry_note}", "重试提示（字数超标时自动填入）"),
     ],
 }
@@ -252,25 +242,25 @@ def build_context(raw_slots: dict) -> dict:
     """从原始槽位值构建完整渲染上下文（计算派生值、生成条件段落）。"""
     ctx = dict(raw_slots)
 
-    # 数值计算
-    chars = int(ctx.get("chars_per_episode", 300))
+    # 数值计算：使用用户配置的字数区间
+    chars_min = int(ctx.get("chars_min", 270))
+    chars_max = int(ctx.get("chars_max", 330))
+    ctx["chars_min"] = chars_min
+    ctx["chars_max"] = chars_max
+
+    chars_mid = (chars_min + chars_max) // 2
+    ctx["chars_per_episode"] = chars_mid
     episodes = int(ctx.get("episode_count", 20))
+    ctx["episode_duration_seconds"] = round(chars_mid / CHARS_PER_SEC)
 
-    ctx["chars_min"] = int(chars * 0.9)
-    ctx["chars_max"] = int(chars * 1.1)
-    ctx["episode_duration_seconds"] = round(chars / CHARS_PER_SEC)
-
-    total_secs = round(chars * episodes / CHARS_PER_SEC)
+    total_secs = round(chars_mid * episodes / CHARS_PER_SEC)
     mins, secs = divmod(total_secs, 60)
     ctx["total_duration_display"] = f"{mins}分{secs}秒" if mins else f"{secs}秒"
 
-    # 条件段落
-    for key, label in (
-        ("character_description", "角色设定"),
-        ("forbidden_content", "禁止内容"),
-    ):
-        val = ctx.get(key, "").strip()
-        ctx[f"{key}_section"] = f"- {label}：{val}" if val else ""
+    # 兼容旧自定义模板中可能残留的变量
+    ctx.setdefault("character_description_section", "")
+    ctx.setdefault("forbidden_content_section", "")
+    ctx.setdefault("target_platform", "")
 
     # 宠物主角 → 画面只出现动物
     ptype = ctx.get("protagonist_type", "")

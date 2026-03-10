@@ -481,14 +481,25 @@ class App(tk.Tk):
         sb.bind("<KeyRelease>", lambda _: self._update_duration())
         r += 1
 
-        ttk.Label(f, text="每集字数：").grid(row=r, column=0, sticky="w", pady=3)
-        self._chars_var = tk.IntVar(
-            value=self._gen_params.get("chars_per_episode", 300))
-        sb2 = ttk.Spinbox(f, from_=30, to=2000, increment=10,
-                          textvariable=self._chars_var, width=8,
-                          command=self._update_duration)
-        sb2.grid(row=r, column=1, sticky="w", pady=3, padx=(8, 0))
-        sb2.bind("<KeyRelease>", lambda _: self._update_duration())
+        ttk.Label(f, text="每集字数范围：").grid(row=r, column=0, sticky="w", pady=3)
+        range_frame = ttk.Frame(f)
+        range_frame.grid(row=r, column=1, sticky="w", pady=3, padx=(8, 0))
+        self._chars_min_var = tk.IntVar(
+            value=self._gen_params.get("chars_min", 270))
+        sb_min = ttk.Spinbox(range_frame, from_=30, to=5000, increment=10,
+                             textvariable=self._chars_min_var, width=6,
+                             command=self._update_duration)
+        sb_min.pack(side=tk.LEFT)
+        sb_min.bind("<KeyRelease>", lambda _: self._update_duration())
+        ttk.Label(range_frame, text=" ~ ").pack(side=tk.LEFT)
+        self._chars_max_var = tk.IntVar(
+            value=self._gen_params.get("chars_max", 330))
+        sb_max = ttk.Spinbox(range_frame, from_=30, to=5000, increment=10,
+                             textvariable=self._chars_max_var, width=6,
+                             command=self._update_duration)
+        sb_max.pack(side=tk.LEFT)
+        sb_max.bind("<KeyRelease>", lambda _: self._update_duration())
+        ttk.Label(range_frame, text=" 字").pack(side=tk.LEFT)
         r += 1
 
         self._duration_label = ttk.Label(f, text="", foreground="#666")
@@ -500,11 +511,13 @@ class App(tk.Tk):
 
     def _update_duration(self):
         try:
-            chars = self._chars_var.get()
+            cmin = self._chars_min_var.get()
+            cmax = self._chars_max_var.get()
             eps = self._episode_var.get()
         except (tk.TclError, ValueError):
             return
-        per_ep = round(chars / templates.CHARS_PER_SEC)
+        mid = (cmin + cmax) // 2
+        per_ep = round(mid / templates.CHARS_PER_SEC)
         total = per_ep * eps
         mins, secs = divmod(total, 60)
         total_str = f"{mins}分{secs}秒" if mins else f"{secs}秒"
@@ -539,25 +552,7 @@ class App(tk.Tk):
 
         self._pacing_var = tk.StringVar(
             value=self._gen_params.get("pacing", "中等"))
-        combo("节奏：", self._pacing_var, templates.PACINGS, r); r += 1
-
-        self._platform_var = tk.StringVar(
-            value=self._gen_params.get("target_platform", "抖音"))
-        combo("目标平台：", self._platform_var, templates.PLATFORMS, r); r += 1
-
-        # 角色设定和禁止内容移入此区域
-        ttk.Separator(f, orient="horizontal").grid(
-            row=r, column=0, columnspan=2, sticky="ew", pady=6); r += 1
-
-        def text_field(label, attr_name, row):
-            ttk.Label(f, text=label).grid(row=row, column=0, sticky="w", pady=3)
-            var = tk.StringVar(value=self._gen_params.get(attr_name, ""))
-            setattr(self, f"_{attr_name}_var", var)
-            ttk.Entry(f, textvariable=var).grid(
-                row=row, column=1, sticky="ew", pady=3, padx=(8, 0))
-
-        text_field("角色设定：", "character_description", r); r += 1
-        text_field("禁止内容：", "forbidden_content", r)
+        combo("节奏：", self._pacing_var, templates.PACINGS, r)
 
         f.columnconfigure(1, weight=1)
 
@@ -615,15 +610,13 @@ class App(tk.Tk):
             "character_type": "、".join(selected_chars),
             "plot": self._plot_var.get(),
             "episode_count": self._episode_var.get(),
-            "chars_per_episode": self._chars_var.get(),
+            "chars_min": self._chars_min_var.get(),
+            "chars_max": self._chars_max_var.get(),
             "visual_style": self._visual_var.get(),
             "aspect_ratio": self._ratio_var.get(),
             "mood": self._mood_var.get(),
             "narration_style": self._narration_var.get(),
             "pacing": self._pacing_var.get(),
-            "target_platform": self._platform_var.get(),
-            "character_description": self._character_description_var.get(),
-            "forbidden_content": self._forbidden_content_var.get(),
             "character_profile": self._character_profile,
         }
 
@@ -831,9 +824,9 @@ class App(tk.Tk):
                            outline: str, ct: dict):
         """逐集生成分镜脚本，超出字数范围时自动重试。"""
         episode_count = int(slots["episode_count"])
-        chars_target = int(slots["chars_per_episode"])
-        chars_min = int(chars_target * 0.9)
-        chars_max = int(chars_target * 1.1)
+        chars_min = int(slots["chars_min"])
+        chars_max = int(slots["chars_max"])
+        chars_target = (chars_min + chars_max) // 2
 
         results: list[tuple[int, int, bool]] = []  # (ep_num, char_count, accepted)
 

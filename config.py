@@ -18,20 +18,13 @@ _LLM_DEFAULTS: dict = {
 
 _GENERATION_DEFAULTS: dict = {
     "episode_count": 20,
-    "chars_per_episode": 300,
+    "chars_min": 270,
+    "chars_max": 330,
     "visual_style": "写实",
     "aspect_ratio": "9:16竖屏",
     "mood": "自动",
     "narration_style": "第三人称旁白",
     "pacing": "中等",
-    "target_platform": "抖音",
-    "hook_style": "自动",
-    "cliffhanger_style": "自动",
-    "shot_density": "自动",
-    "dialogue_ratio": "旁白为主",
-    "character_description": "",
-    "custom_requirements": "",
-    "forbidden_content": "",
 }
 
 
