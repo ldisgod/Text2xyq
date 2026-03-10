@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import string
 
@@ -91,7 +92,9 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "你是专业的角色视觉设定师，为 AI 视频生成工具制作统一的角色视觉档案。\n"
         "档案中每项描述必须精确到可直接用于视频生成的视觉关键词（颜色、体型、标志特征），\n"
         "避免任何抽象词汇，确保 AI 每次生成时角色外貌高度一致。\n"
-        "${protagonist_constraint_section}"
+        "${protagonist_constraint_section}\n"
+        "\n"
+        "你必须以纯 JSON 数组格式输出，不要输出 markdown 代码块或任何其他内容。"
     ),
 
     "character_profile_user": (
@@ -102,16 +105,20 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "- 类型：${protagonist_type}\n"
         "- 形象：${character_type}\n"
         "\n"
-        "请为故事中的主要角色生成【视觉一致性档案】，每个角色包含以下字段：\n"
+        "请为故事中的主要角色生成视觉一致性档案，以 JSON 数组返回。\n"
+        "每个角色一个对象，字段如下：\n"
+        '[\n'
+        '  {\n'
+        '    "name": "角色名",\n'
+        '    "外貌": "毛色/肤色/发色（精确到色值）、体型、面部特征",\n'
+        '    "标志性特征": "每集必须出现的固定视觉元素",\n'
+        '    "常见姿势与动作": "该角色标志性的肢体语言",\n'
+        '    "情绪表现": "高兴/紧张/愤怒时的具体表情与肢体变化",\n'
+        '    "固定道具与配件": "随身携带或经常出现的物品"\n'
+        '  }\n'
+        ']\n'
         "\n"
-        "【角色名】\n"
-        "- 外貌：毛色/肤色/发色（精确到色值级别）、体型、面部特征\n"
-        "- 标志性特征：每集必须出现的固定视觉元素（如「左耳缺角」「橘红短毛」）\n"
-        "- 常见姿势/动作：该角色标志性的肢体语言\n"
-        "- 情绪表现：高兴/紧张/愤怒时的具体表情与肢体变化\n"
-        "- 固定道具/配件：随身携带或经常出现的物品\n"
-        "\n"
-        "请用精简的短语格式描述，便于在每集分镜中直接引用。"
+        "请用精简的短语描述，便于在每集分镜中直接引用。只输出 JSON 数组。"
     ),
 
     "outline_system": (
@@ -317,28 +324,76 @@ def get_template_names() -> list[str]:
 # ---------------------------------------------------------------------------
 
 def parse_character_profiles(profile_text: str) -> dict[str, str]:
-    """将视觉档案原文解析为 {角色名: 档案原文块} 字典。
+    """将视觉档案解析为 {角色名: 格式化文本块} 字典。
 
-    支持多种 LLM 输出格式：
-      **【云灰】**、【云灰】、**【云灰】、---\\n【云灰】 等。
+    优先尝试 JSON 解析（LLM 被要求返回 JSON 数组）；
+    若 JSON 失败则降级为正则文本解析。
     """
     if not profile_text or not profile_text.strip():
         return {}
 
-    pattern = r'(?:^|\n)\s*(?:-{3,}\s*\n\s*)?(\*{0,2})\s*【([^】]+)】\s*\1[^\S\n]*'
-    matches = list(re.finditer(pattern, profile_text))
+    result = _parse_json_profiles(profile_text)
+    if result:
+        return result
+    return _parse_text_profiles(profile_text)
+
+
+def _parse_json_profiles(raw: str) -> dict[str, str]:
+    """从 JSON 数组解析角色档案。"""
+    text = raw.strip()
+    # 剥离 markdown 代码块
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = lines[1:]  # 去掉 ```json
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines)
+
+    # 尝试提取 JSON 数组
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r'\[.*\]', text, re.DOTALL)
+        if not m:
+            return {}
+        try:
+            data = json.loads(m.group())
+        except json.JSONDecodeError:
+            return {}
+
+    if not isinstance(data, list):
+        return {}
+
+    result: dict[str, str] = {}
+    for item in data:
+        if not isinstance(item, dict) or "name" not in item:
+            continue
+        name = str(item["name"])
+        lines = [f"【{name}】"]
+        for key, val in item.items():
+            if key == "name" or not val:
+                continue
+            lines.append(f"- {key}：{val}")
+        result[name] = "\n".join(lines)
+
+    return result
+
+
+def _parse_text_profiles(raw: str) -> dict[str, str]:
+    """降级方案：用正则从自由文本中解析角色档案。"""
+    pattern = r'(?:^|\n)[^\S\n]*(?:-{3,}[^\S\n]*\n[^\S\n]*)?[#* ]*【([^】]+)】[* ]*'
+    matches = list(re.finditer(pattern, raw))
     if not matches:
         return {}
 
     result: dict[str, str] = {}
     for i, m in enumerate(matches):
-        name = m.group(2).strip()
+        name = m.group(1).strip()
         start = m.start()
-        if start < len(profile_text) and profile_text[start] == '\n':
+        if start < len(raw) and raw[start] == '\n':
             start += 1
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(profile_text)
-        block = profile_text[start:end].rstrip()
-        result[name] = block
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+        result[name] = raw[start:end].rstrip()
 
     return result
 
@@ -347,7 +402,7 @@ def extract_episode_profiles(
     parsed_profiles: dict[str, str],
     episode_text: str,
 ) -> str:
-    """从已解析的档案中提取 episode_text 里出现的角色，返回拼接后的原文。"""
+    """从已解析的档案中提取 episode_text 里出现的角色，返回拼接后的文本。"""
     if not parsed_profiles or not episode_text:
         return ""
     matched = [block for name, block in parsed_profiles.items()
@@ -356,7 +411,7 @@ def extract_episode_profiles(
 
 
 def inject_visual_profiles(episode_text: str, profiles_text: str) -> str:
-    """将视觉档案原文插入到【场景】与【分镜】之间。"""
+    """将视觉档案文本插入到【场景】与【分镜】之间。"""
     if not profiles_text:
         return episode_text
 

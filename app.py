@@ -173,6 +173,7 @@ class App(tk.Tk):
         self._custom_templates = config.load_custom_templates()
         self._outline_text: str = ""
         self._character_profile: str = ""
+        self._parsed_profiles: dict[str, str] = {}
 
         self._config_frame = self._build_config_page()
         self._main_frame: ttk.Frame | None = None
@@ -431,6 +432,19 @@ class App(tk.Tk):
     def _build_left_panels(self):
         parent = self._left_inner
 
+        # 模型选择（主页可切换）
+        model_frame = ttk.Frame(parent)
+        model_frame.pack(fill=tk.X, padx=4, pady=(0, 6))
+        ttk.Label(model_frame, text="模型：").pack(side=tk.LEFT)
+        self._model_var = tk.StringVar(
+            value=self._llm_cfg.get("model", "qwen-plus"))
+        model_cb = ttk.Combobox(
+            model_frame, textvariable=self._model_var,
+            values=templates.AVAILABLE_MODELS, width=22)
+        model_cb.pack(side=tk.LEFT, padx=(4, 0))
+        model_cb.bind("<<ComboboxSelected>>", self._on_model_change)
+        model_cb.bind("<FocusOut>", self._on_model_change)
+
         core = ttk.LabelFrame(parent, text="选材设定", padding=8)
         core.pack(fill=tk.X, padx=4, pady=(0, 6))
         self._build_core(core)
@@ -542,6 +556,12 @@ class App(tk.Tk):
         plots = templates.STYLE_PLOTS.get(style, templates.PLOTS)
         self._cb_plot["values"] = plots
         self._plot_var.set(plots[0] if plots else "")
+
+    def _on_model_change(self, _=None):
+        model = self._model_var.get().strip()
+        if model and model != self._llm_cfg.get("model"):
+            self._llm_cfg["model"] = model
+            config.save_llm(self._llm_cfg)
 
     # ---- 时长控制 ----
 
@@ -753,6 +773,7 @@ class App(tk.Tk):
         self._set_text(self._episode_box, "")
         self._outline_text = ""
         self._character_profile = ""
+        self._parsed_profiles = {}
         self._stats_label.configure(text="")
         self._status_var.set("正在生成故事大纲…")
         self._progress.configure(mode="indeterminate")
@@ -791,6 +812,7 @@ class App(tk.Tk):
         self._set_generating(True)
         self._set_text(self._profile_box, "")
         self._character_profile = ""
+        self._parsed_profiles = {}
         self._status_var.set("正在生成角色视觉档案…")
         self._progress.configure(mode="indeterminate")
         self._progress.start(12)
@@ -806,8 +828,8 @@ class App(tk.Tk):
                 parts: list[str] = []
                 for chunk in client.chat_stream(msgs):
                     parts.append(chunk)
-                    self._append_text(self._profile_box, chunk)
-                self._character_profile = "".join(parts)
+                raw = "".join(parts)
+                self._apply_profile(raw)
                 self.after(0, lambda: self._status_var.set("角色视觉档案生成完成"))
             except LLMError as e:
                 self.after(0, lambda: messagebox.showerror(
@@ -820,6 +842,19 @@ class App(tk.Tk):
                 self.after(0, lambda: self._set_generating(False))
 
         threading.Thread(target=task, daemon=True).start()
+
+    def _apply_profile(self, raw: str):
+        """解析 LLM 返回的视觉档案（JSON 优先）并更新 UI 和内部状态。"""
+        parsed = templates.parse_character_profiles(raw)
+        if parsed:
+            display = "\n\n".join(parsed.values())
+            self._parsed_profiles = parsed
+            self._character_profile = display
+        else:
+            self._parsed_profiles = {}
+            self._character_profile = raw
+            display = raw
+        self.after(0, lambda: self._set_text(self._profile_box, display))
 
     def _on_generate_episodes(self):
         if not self._outline_text.strip():
@@ -843,6 +878,7 @@ class App(tk.Tk):
         self._set_text(self._episode_box, "")
         self._outline_text = ""
         self._character_profile = ""
+        self._parsed_profiles = {}
         self._stats_label.configure(text="")
         self._progress.configure(mode="indeterminate")
         self._progress.start(12)
@@ -882,8 +918,7 @@ class App(tk.Tk):
                 profile_parts: list[str] = []
                 for chunk in client.chat_stream(profile_msgs):
                     profile_parts.append(chunk)
-                    self._append_text(self._profile_box, chunk)
-                self._character_profile = "".join(profile_parts)
+                self._apply_profile("".join(profile_parts))
 
                 # 3. 生成各集（注入档案）
                 ep_slots = dict(slots, character_profile=self._character_profile)
@@ -903,9 +938,8 @@ class App(tk.Tk):
         chars_max = int(slots["chars_max"])
         chars_target = (chars_min + chars_max) // 2
 
-        # 预解析角色视觉档案 → {角色名: 原文块}
-        parsed_profiles = templates.parse_character_profiles(
-            slots.get("character_profile", ""))
+        # 使用已解析的角色视觉档案（JSON 解析在生成档案时已完成）
+        parsed_profiles = dict(self._parsed_profiles)
 
         results: list[tuple[int, int, bool]] = []  # (ep_num, char_count, accepted)
 
