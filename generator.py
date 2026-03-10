@@ -7,6 +7,22 @@ import templates
 from llm_client import LLMClient, LLMError  # noqa: F401
 
 
+def build_character_profile_messages(
+    slots: dict,
+    outline: str,
+    custom_templates: dict | None = None,
+) -> list[dict]:
+    """构建角色视觉档案生成所需的 messages 列表。"""
+    ctx = templates.build_context(slots)
+    ctx["outline"] = outline
+    system = templates.render("character_profile_system", ctx, custom_templates)
+    user = templates.render("character_profile_user", ctx, custom_templates)
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
 def build_outline_messages(
     slots: dict,
     custom_templates: dict | None = None,

@@ -80,6 +80,33 @@ CHARS_PER_SEC = 3
 # ---------------------------------------------------------------------------
 
 DEFAULT_TEMPLATES: dict[str, str] = {
+    "character_profile_system": (
+        "你是专业的角色视觉设定师，为 AI 视频生成工具制作统一的角色视觉档案。\n"
+        "档案中每项描述必须精确到可直接用于视频生成的视觉关键词（颜色、体型、标志特征），\n"
+        "避免任何抽象词汇，确保 AI 每次生成时角色外貌高度一致。\n"
+        "${protagonist_constraint_section}"
+    ),
+
+    "character_profile_user": (
+        "故事大纲：\n"
+        "${outline}\n"
+        "\n"
+        "主角信息：\n"
+        "- 类型：${protagonist_type}\n"
+        "- 形象：${character_type}\n"
+        "\n"
+        "请为故事中的主要角色生成【视觉一致性档案】，每个角色包含以下字段：\n"
+        "\n"
+        "【角色名】\n"
+        "- 外貌：毛色/肤色/发色（精确到色值级别）、体型、面部特征\n"
+        "- 标志性特征：每集必须出现的固定视觉元素（如「左耳缺角」「橘红短毛」）\n"
+        "- 常见姿势/动作：该角色标志性的肢体语言\n"
+        "- 情绪表现：高兴/紧张/愤怒时的具体表情与肢体变化\n"
+        "- 固定道具/配件：随身携带或经常出现的物品\n"
+        "\n"
+        "请用精简的短语格式描述，便于在每集分镜中直接引用。"
+    ),
+
     "outline_system": (
         "你是一位专业的短视频剧本策划师，擅长创作适合${target_platform}平台的短视频连续剧剧本大纲。\n"
         "\n"
@@ -128,6 +155,7 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "- 目标平台：${target_platform}\n"
         "${protagonist_constraint_section}\n"
         "${forbidden_content_section}\n"
+        "${character_profile_section}\n"
         "\n"
         "## 输出格式（每集严格遵循）\n"
         "第X集：[集名]\n"
@@ -163,6 +191,14 @@ DEFAULT_TEMPLATES: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 SLOT_REFERENCE: dict[str, list[tuple[str, str]]] = {
+    "character_profile_system": [
+        ("${protagonist_constraint_section}", "宠物约束段落（宠物主角时自动生成）"),
+    ],
+    "character_profile_user": [
+        ("${outline}", "故事大纲（自动填入）"),
+        ("${protagonist_type}", "主角类型"),
+        ("${character_type}", "主角形象"),
+    ],
     "outline_system": [
         ("${target_platform}", "目标平台"),
         ("${visual_style}", "画面风格"),
@@ -241,6 +277,13 @@ def build_context(raw_slots: dict) -> dict:
     ctx["protagonist_constraint_section"] = (
         "- 【重要】画面中只能出现动物，不得出现人类面孔或人物作为主角"
         if ptype == "宠物" else ""
+    )
+
+    # 角色视觉档案（生成后注入，为空则段落为空）
+    profile = ctx.get("character_profile", "").strip()
+    ctx["character_profile_section"] = (
+        f"## 角色视觉档案（每集严格遵守，保持外貌一致）\n{profile}"
+        if profile else ""
     )
 
     # 单集生成所需的默认值

@@ -55,6 +55,8 @@ class _ToggleSection:
 class TemplateEditorDialog(tk.Toplevel):
 
     _TAB_LABELS = {
+        "character_profile_system": "角色档案 · System",
+        "character_profile_user":   "角色档案 · User",
         "outline_system": "大纲 · System",
         "outline_user":   "大纲 · User",
         "episode_system": "分集 · System",
@@ -149,6 +151,7 @@ class App(tk.Tk):
         self._gen_params = config.load_generation_params()
         self._custom_templates = config.load_custom_templates()
         self._outline_text: str = ""
+        self._character_profile: str = ""
 
         self._config_frame = self._build_config_page()
         self._main_frame: ttk.Frame | None = None
@@ -377,6 +380,11 @@ class App(tk.Tk):
             parent, text="生成故事大纲", command=self._on_generate_outline)
         self._btn_outline.pack(fill=tk.X, padx=4, pady=2, ipady=4)
 
+        self._btn_profile = ttk.Button(
+            parent, text="生成角色视觉档案",
+            command=self._on_generate_profile, state="disabled")
+        self._btn_profile.pack(fill=tk.X, padx=4, pady=2, ipady=4)
+
         self._btn_episodes = ttk.Button(
             parent, text="生成各集提示词",
             command=self._on_generate_episodes, state="disabled")
@@ -564,6 +572,19 @@ class App(tk.Tk):
             of, wrap=tk.WORD, font=("TkDefaultFont", 10), state="disabled")
         self._outline_box.pack(fill=tk.BOTH, expand=True)
 
+        pf = ttk.LabelFrame(parent, text="角色视觉档案", padding=6)
+        parent.add(pf, weight=1)
+        self._profile_box = scrolledtext.ScrolledText(
+            pf, wrap=tk.WORD, font=("TkDefaultFont", 10), state="disabled")
+        self._profile_box.pack(fill=tk.BOTH, expand=True)
+        profile_bar = ttk.Frame(pf)
+        profile_bar.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(
+            profile_bar,
+            text="档案会自动注入到每集分镜提示词，确保角色外貌一致",
+            foreground="#888",
+        ).pack(side=tk.LEFT, padx=4)
+
         ef = ttk.LabelFrame(parent, text="各集分镜脚本（供小云雀使用）", padding=6)
         parent.add(ef, weight=2)
         self._episode_box = scrolledtext.ScrolledText(
@@ -603,6 +624,7 @@ class App(tk.Tk):
             "target_platform": self._platform_var.get(),
             "character_description": self._character_description_var.get(),
             "forbidden_content": self._forbidden_content_var.get(),
+            "character_profile": self._character_profile,
         }
 
     def _save_gen_params(self):
@@ -627,9 +649,13 @@ class App(tk.Tk):
         state = "disabled" if active else "normal"
         self._btn_outline.configure(state=state)
         self._btn_all.configure(state=state)
+        has_outline = bool(self._outline_text)
+        self._btn_profile.configure(
+            state="disabled" if active else
+            ("normal" if has_outline else "disabled"))
         self._btn_episodes.configure(
             state="disabled" if active else
-            ("normal" if self._outline_text else "disabled"))
+            ("normal" if has_outline else "disabled"))
         if not active:
             self._progress["value"] = 0
 
@@ -655,8 +681,10 @@ class App(tk.Tk):
     def _on_generate_outline(self):
         self._set_generating(True)
         self._set_text(self._outline_box, "")
+        self._set_text(self._profile_box, "")
         self._set_text(self._episode_box, "")
         self._outline_text = ""
+        self._character_profile = ""
         self._stats_label.configure(text="")
         self._status_var.set("正在生成故事大纲…")
         self._progress.configure(mode="indeterminate")
@@ -676,7 +704,43 @@ class App(tk.Tk):
                     self._append_text(self._outline_box, chunk)
                 self._outline_text = "".join(parts)
                 self.after(0, lambda: self._status_var.set("大纲生成完成"))
-                self.after(0, lambda: self._btn_episodes.configure(state="normal"))
+            except LLMError as e:
+                self.after(0, lambda: messagebox.showerror(
+                    "生成失败", str(e), parent=self))
+                self.after(0, lambda: self._status_var.set("生成失败"))
+            finally:
+                self.after(0, lambda: self._progress.stop())
+                self.after(0, lambda: self._progress.configure(
+                    mode="determinate", value=0))
+                self.after(0, lambda: self._set_generating(False))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_generate_profile(self):
+        if not self._outline_text.strip():
+            messagebox.showwarning("提示", "请先生成故事大纲！", parent=self)
+            return
+        self._set_generating(True)
+        self._set_text(self._profile_box, "")
+        self._character_profile = ""
+        self._status_var.set("正在生成角色视觉档案…")
+        self._progress.configure(mode="indeterminate")
+        self._progress.start(12)
+
+        client = self._make_client()
+        slots = self._collect_slots()
+        outline = self._outline_text
+        ct = self._custom_templates
+
+        def task():
+            try:
+                msgs = generator.build_character_profile_messages(slots, outline, ct)
+                parts: list[str] = []
+                for chunk in client.chat_stream(msgs):
+                    parts.append(chunk)
+                    self._append_text(self._profile_box, chunk)
+                self._character_profile = "".join(parts)
+                self.after(0, lambda: self._status_var.set("角色视觉档案生成完成"))
             except LLMError as e:
                 self.after(0, lambda: messagebox.showerror(
                     "生成失败", str(e), parent=self))
@@ -707,8 +771,10 @@ class App(tk.Tk):
     def _on_generate_all(self):
         self._set_generating(True)
         self._set_text(self._outline_box, "")
+        self._set_text(self._profile_box, "")
         self._set_text(self._episode_box, "")
         self._outline_text = ""
+        self._character_profile = ""
         self._stats_label.configure(text="")
         self._progress.configure(mode="indeterminate")
         self._progress.start(12)
@@ -719,27 +785,45 @@ class App(tk.Tk):
         slots = self._collect_slots()
         ct = self._custom_templates
 
+        def _stop_indeterminate():
+            self._progress.stop()
+            self._progress.configure(mode="determinate", value=0)
+
+        def _fail(e: Exception):
+            messagebox.showerror("生成失败", str(e), parent=self)
+            self._status_var.set("生成失败")
+            _stop_indeterminate()
+            self._set_generating(False)
+
         def task():
             try:
+                # 1. 生成大纲
                 msgs = generator.build_outline_messages(slots, ct)
                 parts: list[str] = []
                 for chunk in client.chat_stream(msgs):
                     parts.append(chunk)
                     self._append_text(self._outline_box, chunk)
                 self._outline_text = "".join(parts)
-                self.after(0, lambda: self._progress.stop())
-                self.after(0, lambda: self._progress.configure(
-                    mode="determinate", value=0))
+                outline = self._outline_text
+
+                # 2. 生成角色视觉档案
+                self.after(0, lambda: self._status_var.set("正在生成角色视觉档案…"))
+                profile_slots = dict(slots, character_profile="")
+                profile_msgs = generator.build_character_profile_messages(
+                    profile_slots, outline, ct)
+                profile_parts: list[str] = []
+                for chunk in client.chat_stream(profile_msgs):
+                    profile_parts.append(chunk)
+                    self._append_text(self._profile_box, chunk)
+                self._character_profile = "".join(profile_parts)
+
+                # 3. 生成各集（注入档案）
+                ep_slots = dict(slots, character_profile=self._character_profile)
+                self.after(0, _stop_indeterminate)
                 self.after(0, lambda: self._run_episodes_task(
-                    client, slots, self._outline_text, ct))
+                    client, ep_slots, outline, ct))
             except LLMError as e:
-                self.after(0, lambda: messagebox.showerror(
-                    "生成失败", str(e), parent=self))
-                self.after(0, lambda: self._status_var.set("生成失败"))
-                self.after(0, lambda: self._progress.stop())
-                self.after(0, lambda: self._progress.configure(
-                    mode="determinate", value=0))
-                self.after(0, lambda: self._set_generating(False))
+                self.after(0, lambda: _fail(e))
 
         threading.Thread(target=task, daemon=True).start()
 
