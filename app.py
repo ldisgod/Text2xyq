@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import sys
 import threading
-import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -496,8 +495,8 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(f, text="生成集数", font=ctk.CTkFont(size=12),
                       anchor="w").pack(fill="x", padx=pad, pady=(pad, 0))
-        self._episode_var = tk.IntVar(
-            value=self._gen_params.get("episode_count", 20))
+        self._episode_var = ctk.StringVar(
+            value=str(self._gen_params.get("episode_count", 20)))
         ep_frame = ctk.CTkFrame(f, fg_color="transparent")
         ep_frame.pack(fill="x", padx=pad, pady=(2, 8))
         self._ep_entry = ctk.CTkEntry(
@@ -511,14 +510,14 @@ class App(ctk.CTk):
                       anchor="w").pack(fill="x", padx=pad)
         range_frame = ctk.CTkFrame(f, fg_color="transparent")
         range_frame.pack(fill="x", padx=pad, pady=(2, 4))
-        self._chars_min_var = tk.IntVar(
-            value=self._gen_params.get("chars_min", 270))
+        self._chars_min_var = ctk.StringVar(
+            value=str(self._gen_params.get("chars_min", 270)))
         ctk.CTkEntry(
             range_frame, textvariable=self._chars_min_var, width=70,
         ).pack(side="left")
         ctk.CTkLabel(range_frame, text=" ~ ").pack(side="left")
-        self._chars_max_var = tk.IntVar(
-            value=self._gen_params.get("chars_max", 330))
+        self._chars_max_var = ctk.StringVar(
+            value=str(self._gen_params.get("chars_max", 330)))
         ctk.CTkEntry(
             range_frame, textvariable=self._chars_max_var, width=70,
         ).pack(side="left")
@@ -545,10 +544,10 @@ class App(ctk.CTk):
     def _do_update_duration(self):
         self._duration_debounce_id = None
         try:
-            cmin = self._chars_min_var.get()
-            cmax = self._chars_max_var.get()
-            eps = self._episode_var.get()
-        except (tk.TclError, ValueError):
+            cmin = int(self._chars_min_var.get())
+            cmax = int(self._chars_max_var.get())
+            eps = int(self._episode_var.get())
+        except (ValueError, TypeError):
             return
         mid = (cmin + cmax) // 2
         per_ep = round(mid / templates.CHARS_PER_SEC)
@@ -655,9 +654,9 @@ class App(ctk.CTk):
             "style": self._style_var.get(),
             "character_type": "、".join(selected_chars),
             "plot": self._plot_var.get(),
-            "episode_count": self._episode_var.get(),
-            "chars_min": self._chars_min_var.get(),
-            "chars_max": self._chars_max_var.get(),
+            "episode_count": int(self._episode_var.get()),
+            "chars_min": int(self._chars_min_var.get()),
+            "chars_max": int(self._chars_max_var.get()),
             "visual_style": self._visual_var.get(),
             "aspect_ratio": self._ratio_var.get(),
             "mood": self._mood_var.get(),
