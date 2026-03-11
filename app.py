@@ -470,7 +470,7 @@ class App(ctk.CTk):
             row, col = divmod(i, 3)
             ctk.CTkCheckBox(
                 self._char_check_frame, text=ch, variable=var,
-                checkbox_width=18, checkbox_height=18,
+                width=80, checkbox_width=18, checkbox_height=18,
                 font=ctk.CTkFont(size=12),
             ).grid(row=row, column=col, sticky="w", padx=4, pady=2)
 
