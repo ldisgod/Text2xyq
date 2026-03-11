@@ -918,7 +918,8 @@ class App(ctk.CTk):
                             parts.append(chunk)
 
                         text = "".join(parts)
-                        count = len(text.strip())
+                        # 字数校验排除视觉档案部分（LLM 可能自行生成该段落）
+                        count = len(templates.strip_visual_profiles(text))
 
                         if not best_text or (
                                 abs(count - chars_target) < abs(best_count - chars_target)):
@@ -929,7 +930,8 @@ class App(ctk.CTk):
                             accepted = True
                             break
 
-                    # 注入视觉档案
+                    # 先移除 LLM 可能自行输出的视觉档案，再统一注入
+                    best_text = templates.strip_visual_profiles(best_text)
                     relevant = templates.extract_episode_profiles(
                         parsed_profiles, best_text)
                     best_text = templates.inject_visual_profiles(

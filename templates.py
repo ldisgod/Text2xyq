@@ -402,12 +402,17 @@ def extract_episode_profiles(
     parsed_profiles: dict[str, str],
     episode_text: str,
 ) -> str:
-    """从已解析的档案中提取 episode_text 里出现的角色，返回拼接后的文本。"""
-    if not parsed_profiles or not episode_text:
+    """返回所有角色的视觉档案文本，确保每集视觉描述完整一致。"""
+    if not parsed_profiles:
         return ""
-    matched = [block for name, block in parsed_profiles.items()
-               if name in episode_text]
-    return "\n\n".join(matched)
+    return "\n\n".join(parsed_profiles.values())
+
+
+def strip_visual_profiles(text: str) -> str:
+    """移除文本中的【视觉档案】段落（如果 LLM 自行生成了该段落）。"""
+    return re.sub(
+        r'\s*【视觉档案】.*?(?=【分镜】|【集末悬念】|\Z)', '',
+        text, flags=re.DOTALL)
 
 
 def inject_visual_profiles(episode_text: str, profiles_text: str) -> str:
