@@ -900,6 +900,8 @@ class App(ctk.CTk):
                     best_count = 0
                     accepted = False
 
+                    best_dur_total = 0
+
                     for attempt in range(MAX_RETRIES + 1):
                         attempt_label = f"（第{attempt + 1}次）" if attempt > 0 else ""
                         self.after(0, lambda n=ep_num, lbl=attempt_label:
@@ -907,7 +909,9 @@ class App(ctk.CTk):
                                        f"第 {n}/{episode_count} 集{lbl}"))
 
                         if attempt > 0:
-                            ep_slots = dict(ep_slots, previous_count=best_count)
+                            ep_slots = dict(ep_slots,
+                                            previous_count=best_count,
+                                            previous_duration=best_dur_total)
 
                         msgs = generator.build_single_episode_messages(
                             ep_slots, outline, attempt, ct)
@@ -919,13 +923,15 @@ class App(ctk.CTk):
                         text = "".join(parts)
                         # 字数校验排除视觉档案部分（LLM 可能自行生成该段落）
                         count = len(templates.strip_visual_profiles(text))
+                        dur_ok, _, dur_total = templates.check_duration(text)
 
                         if not best_text or (
                                 abs(count - chars_target) < abs(best_count - chars_target)):
                             best_text = text
                             best_count = count
+                            best_dur_total = dur_total
 
-                        if chars_min <= count <= chars_max:
+                        if chars_min <= count <= chars_max and dur_ok:
                             accepted = True
                             break
 
@@ -936,10 +942,21 @@ class App(ctk.CTk):
                     best_text = templates.inject_visual_profiles(
                         best_text, relevant)
 
-                    warning = (
-                        f"\n[字数: {best_count}字，目标: {chars_min}~{chars_max}字]"
-                        if not accepted else ""
-                    )
+                    warnings: list[str] = []
+                    if not accepted:
+                        if not (chars_min <= best_count <= chars_max):
+                            warnings.append(
+                                f"字数: {best_count}字，目标: {chars_min}~{chars_max}字")
+                        _, best_durs, best_dt = templates.check_duration(best_text)
+                        if best_dt < templates.MIN_EPISODE_SECONDS:
+                            warnings.append(
+                                f"分镜总时长: {best_dt}s，要求≥{templates.MIN_EPISODE_SECONDS}s")
+                        short = [f"镜{i+1}({d}s)"
+                                 for i, d in enumerate(best_durs)
+                                 if d < templates.MIN_SHOT_SECONDS]
+                        if short:
+                            warnings.append(f"时长不足: {'、'.join(short)}")
+                    warning = f"\n[{'；'.join(warnings)}]" if warnings else ""
                     self._append_text(
                         self._episode_box,
                         best_text + warning + "\n\n" + "─" * 30 + "\n\n")

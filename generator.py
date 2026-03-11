@@ -53,10 +53,17 @@ def build_single_episode_messages(
 
     if attempt > 0:
         prev_count = slots.get("previous_count", 0)
-        ctx["retry_note"] = (
-            f"注意：上次生成了 {prev_count} 字，不在要求范围内。"
-            f"请严格将本次字数控制在 {ctx['chars_min']}~{ctx['chars_max']} 字以内。"
-        )
+        prev_dur = slots.get("previous_duration", 0)
+        notes: list[str] = []
+        if not (ctx["chars_min"] <= prev_count <= ctx["chars_max"]):
+            notes.append(
+                f"上次生成了 {prev_count} 字，不在要求范围内，"
+                f"请严格控制在 {ctx['chars_min']}~{ctx['chars_max']} 字。")
+        if prev_dur < 60:
+            notes.append(
+                f"上次分镜总时长仅 {prev_dur} 秒，不足 60 秒。"
+                "请增加分镜数量或加长每镜时长，确保每镜≥5秒、总时长≥60秒。")
+        ctx["retry_note"] = "注意：" + "".join(notes) if notes else ""
 
     system = templates.render("episode_system", ctx, custom_templates)
     user = templates.render("episode_user", ctx, custom_templates)

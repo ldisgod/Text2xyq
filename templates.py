@@ -413,6 +413,25 @@ def extract_episode_profiles(
     return "\n\n".join(parsed_profiles.values())
 
 
+MIN_SHOT_SECONDS = 5
+MIN_EPISODE_SECONDS = 60
+
+
+def parse_shot_durations(text: str) -> list[int]:
+    """从分镜文本中提取每个镜头的秒数，如 ①（6s） → [6]。"""
+    return [int(m) for m in re.findall(r'（(\d+)[sS秒]）', text)]
+
+
+def check_duration(text: str) -> tuple[bool, list[int], int]:
+    """校验分镜时长，返回 (是否通过, 各镜头秒数, 总秒数)。"""
+    durations = parse_shot_durations(text)
+    total = sum(durations)
+    ok = (all(d >= MIN_SHOT_SECONDS for d in durations)
+          and total >= MIN_EPISODE_SECONDS
+          and len(durations) > 0)
+    return ok, durations, total
+
+
 def strip_visual_profiles(text: str) -> str:
     """移除文本中的【视觉档案】段落（如果 LLM 自行生成了该段落）。"""
     return re.sub(
