@@ -14,7 +14,6 @@ import generator
 import templates
 from llm_client import LLMClient, LLMError
 
-MAX_RETRIES = 2
 
 # 全局主题
 ctk.set_appearance_mode("dark")
@@ -32,8 +31,10 @@ class TemplateEditorDialog(ctk.CTkToplevel):
         "character_profile_user":   "角色档案·User",
         "outline_system": "大纲·System",
         "outline_user":   "大纲·User",
-        "episode_system": "分集·System",
-        "episode_user":   "分集·User",
+        "episode_system": "剧情框架·System",
+        "episode_user":   "剧情框架·User",
+        "shot_system":    "分镜·System",
+        "shot_user":      "分镜·User",
     }
 
     def __init__(self, parent, custom_templates: dict, on_save: callable):
@@ -886,88 +887,100 @@ class App(ctk.CTk):
     def _run_episodes_task(self, client: LLMClient, slots: dict,
                            outline: str, ct: dict):
         episode_count = int(slots["episode_count"])
-        chars_min = int(slots["chars_min"])
-        chars_max = int(slots["chars_max"])
-        chars_target = (chars_min + chars_max) // 2
         parsed_profiles = dict(self._parsed_profiles)
-        results: list[tuple[int, int, bool]] = []
+        profiles_text = templates.extract_episode_profiles(
+            parsed_profiles, "")
+        results: list[tuple[int, int, int]] = []  # (ep, chars, duration)
 
         def task():
             try:
                 for ep_num in range(1, episode_count + 1):
                     ep_slots = dict(slots, current_episode=ep_num)
-                    best_text = ""
-                    best_count = 0
-                    accepted = False
 
-                    best_dur_total = 0
+                    # ---- Phase A: 剧情框架 ----
+                    self.after(0, lambda n=ep_num:
+                               self._status_var.set(
+                                   f"第 {n}/{episode_count} 集 · 剧情框架"))
 
-                    for attempt in range(MAX_RETRIES + 1):
-                        attempt_label = f"（第{attempt + 1}次）" if attempt > 0 else ""
-                        self.after(0, lambda n=ep_num, lbl=attempt_label:
+                    msgs = generator.build_episode_narrative_messages(
+                        ep_slots, outline, ct)
+                    parts: list[str] = []
+                    for chunk in client.chat_stream(msgs):
+                        parts.append(chunk)
+                    narrative = templates.parse_episode_narrative(
+                        "".join(parts))
+
+                    # 兜底：解析失败时用原始文本
+                    if not narrative.get('narrative'):
+                        narrative['narrative'] = "".join(parts)
+                    if not narrative.get('header'):
+                        narrative['header'] = f"第{ep_num}集"
+
+                    # 先显示框架 + 视觉档案 + 分镜标题
+                    prefix = narrative.get('header', '')
+                    scene = narrative.get('scene', '')
+                    if scene:
+                        prefix += f"\n\n【场景】{scene}"
+                    if profiles_text:
+                        prefix += f"\n\n【视觉档案】\n{profiles_text}"
+                    prefix += "\n\n【分镜】"
+                    self._append_text(self._episode_box, prefix)
+
+                    # ---- Phase B: 逐镜生成 ----
+                    shots: list[str] = []
+                    total_duration = 0
+
+                    while (total_duration < templates.MIN_EPISODE_SECONDS
+                           and len(shots) < templates.MAX_SHOTS):
+                        shot_num = len(shots) + 1
+                        remaining = (templates.MIN_EPISODE_SECONDS
+                                     - total_duration)
+                        is_last = remaining <= templates.MAX_SHOT_SECONDS
+
+                        self.after(0, lambda n=ep_num, s=shot_num:
                                    self._status_var.set(
-                                       f"第 {n}/{episode_count} 集{lbl}"))
+                                       f"第 {n}/{episode_count} 集"
+                                       f" · 分镜 {s}"))
 
-                        if attempt > 0:
-                            ep_slots = dict(ep_slots,
-                                            previous_count=best_count,
-                                            previous_duration=best_dur_total)
+                        shot_msgs = generator.build_shot_messages(
+                            ep_slots, narrative, shots,
+                            shot_num, is_last, ct)
 
-                        msgs = generator.build_single_episode_messages(
-                            ep_slots, outline, attempt, ct)
+                        shot_parts: list[str] = []
+                        for chunk in client.chat_stream(shot_msgs):
+                            shot_parts.append(chunk)
+                        shot_text = "".join(shot_parts).strip()
 
-                        parts: list[str] = []
-                        for chunk in client.chat_stream(msgs):
-                            parts.append(chunk)
+                        # 解析时长
+                        durs = templates.parse_shot_durations(shot_text)
+                        dur = durs[0] if durs else 6
 
-                        text = "".join(parts)
-                        # 字数校验排除视觉档案部分（LLM 可能自行生成该段落）
-                        count = len(templates.strip_visual_profiles(text))
-                        dur_ok, _, dur_total = templates.check_duration(text)
+                        shots.append(shot_text)
+                        total_duration += dur
 
-                        if not best_text or (
-                                abs(count - chars_target) < abs(best_count - chars_target)):
-                            best_text = text
-                            best_count = count
-                            best_dur_total = dur_total
+                        self._append_text(
+                            self._episode_box, f"\n{shot_text}")
 
-                        if chars_min <= count <= chars_max and dur_ok:
-                            accepted = True
+                        if is_last:
                             break
 
-                    # 先移除 LLM 可能自行输出的视觉档案，再统一注入
-                    best_text = templates.strip_visual_profiles(best_text)
-                    relevant = templates.extract_episode_profiles(
-                        parsed_profiles, best_text)
-                    best_text = templates.inject_visual_profiles(
-                        best_text, relevant)
+                    # ---- 集末悬念 + 分隔线 ----
+                    cliffhanger = narrative.get('cliffhanger', '')
+                    tail = ""
+                    if cliffhanger:
+                        tail += f"\n\n【集末悬念】{cliffhanger}"
+                    tail += f"\n\n{'─' * 30}\n\n"
+                    self._append_text(self._episode_box, tail)
 
-                    warnings: list[str] = []
-                    if not accepted:
-                        if not (chars_min <= best_count <= chars_max):
-                            warnings.append(
-                                f"字数: {best_count}字，目标: {chars_min}~{chars_max}字")
-                        _, best_durs, best_dt = templates.check_duration(best_text)
-                        if best_dt < templates.MIN_EPISODE_SECONDS:
-                            warnings.append(
-                                f"分镜总时长: {best_dt}s，要求≥{templates.MIN_EPISODE_SECONDS}s")
-                        short = [f"镜{i+1}({d}s)"
-                                 for i, d in enumerate(best_durs)
-                                 if d < templates.MIN_SHOT_SECONDS]
-                        if short:
-                            warnings.append(f"时长不足: {'、'.join(short)}")
-                    warning = f"\n[{'；'.join(warnings)}]" if warnings else ""
-                    self._append_text(
-                        self._episode_box,
-                        best_text + warning + "\n\n" + "─" * 30 + "\n\n")
-
-                    results.append((ep_num, best_count, accepted))
+                    # 统计
+                    ep_text = templates.assemble_episode(narrative, shots)
+                    char_count = len(ep_text.strip())
+                    results.append((ep_num, char_count, total_duration))
 
                     pct = ep_num / episode_count
                     self.after(0, lambda p=pct: self._progress.set(p))
 
-                self.after(0, lambda: self._on_episodes_done(
-                    results, chars_target, chars_min, chars_max))
+                self.after(0, lambda: self._on_episodes_done(results))
             except LLMError as e:
                 self.after(0, lambda: messagebox.showerror(
                     "生成失败", str(e), parent=self))
@@ -977,20 +990,18 @@ class App(ctk.CTk):
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _on_episodes_done(self, results: list, target: int,
-                          chars_min: int, chars_max: int):
+    def _on_episodes_done(self, results: list):
         self._status_var.set("分镜脚本生成完成")
         if not results:
             return
         counts = [c for _, c, _ in results]
-        avg = sum(counts) / len(counts)
-        lo, hi = min(counts), max(counts)
-        bad = sum(1 for _, c, ok in results if not ok)
-        warning = f" | {bad}集超出范围" if bad else ""
+        durations = [d for _, _, d in results]
+        avg_c = sum(counts) / len(counts)
+        avg_d = sum(durations) / len(durations)
         self._stats_label.configure(
-            text=f"共{len(results)}集 | 平均{round(avg)}字/集"
-                 f" ≈ {round(avg / templates.CHARS_PER_SEC)}秒"
-                 f" | 范围: {lo}~{hi}字{warning}")
+            text=f"共{len(results)}集 | 平均{round(avg_c)}字/集"
+                 f" | 平均{round(avg_d)}s/集"
+                 f" | 字数: {min(counts)}~{max(counts)}")
 
     # ==================================================================
     # 模板编辑器

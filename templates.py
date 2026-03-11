@@ -83,6 +83,14 @@ AVAILABLE_MODELS = [
 # 换算系数：约 3 个中文字符 ≈ 1 秒视频（旁白语速）
 CHARS_PER_SEC = 3
 
+# 分镜时长常量
+MIN_SHOT_SECONDS = 5
+MAX_SHOT_SECONDS = 8
+MIN_EPISODE_SECONDS = 60
+MAX_SHOTS = 20
+
+CIRCLED_NUMBERS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+
 # ---------------------------------------------------------------------------
 # 默认提示词模板（${变量名} 语法）
 # ---------------------------------------------------------------------------
@@ -157,12 +165,10 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "请直接输出大纲内容，不需要额外说明。"
     ),
 
+    # ---- 剧情框架（每集叙事骨架，不含分镜细节）----
+
     "episode_system": (
         "你是专业短视频分镜编剧，为「小云雀」AI视频软件创作分镜脚本。\n"
-        "\n"
-        "## 字数约束（最重要）\n"
-        "每集脚本总字数严格控制在 ${chars_min}~${chars_max} 字。\n"
-        "字数直接决定视频时长（约 3 字/秒），超出或低于范围均会影响成片效果。\n"
         "\n"
         "## 风格要求\n"
         "- 画面风格：${visual_style}\n"
@@ -170,17 +176,15 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "- 情绪基调：${mood}\n"
         "- 叙事方式：${narration_style}\n"
         "${protagonist_constraint_section}\n"
-        "${character_profile_section}\n"
         "\n"
-        "## 输出格式（每集严格遵循）\n"
+        "## 输出格式（严格遵循）\n"
         "第X集：[集名]\n"
         "\n"
         "【场景】[时间·地点·氛围，15字以内]\n"
         "\n"
-        "【分镜】\n"
-        "①（Xs）画面：[动作/构图] | 旁白：[旁白文字或「无」] | 音效：[音效或「无」] | 光线：[光线描述]\n"
-        "②（Xs）画面：... | 旁白：... | 音效：... | 光线：...\n"
-        "（每个镜头不低于 5 秒，每集所有分镜时间累计不低于 60 秒）\n"
+        "【剧情概要】\n"
+        "[用3~5句话概括本集故事走向、关键冲突、角色互动与情绪转折，"
+        "后续将据此逐镜展开]\n"
         "\n"
         "【集末悬念】[一句话勾住下集，20字以内]"
     ),
@@ -190,12 +194,45 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "${outline}\n"
         "\n"
         "---\n"
-        "当前任务：请为第 ${current_episode} 集（共 ${episode_count} 集）编写完整分镜脚本。\n"
+        "当前任务：请为第 ${current_episode} 集（共 ${episode_count} 集）"
+        "编写剧情框架。\n"
         "\n"
-        "字数要求：${chars_min}~${chars_max} 字（≈ ${episode_duration_seconds} 秒）\n"
-        "${retry_note}\n"
+        "请直接输出第 ${current_episode} 集的框架内容，不要任何额外说明。"
+    ),
+
+    # ---- 逐镜生成（每次只输出一个分镜）----
+
+    "shot_system": (
+        "你是专业短视频分镜编剧，为「小云雀」AI视频软件逐镜创作分镜。\n"
         "\n"
-        "请直接输出第 ${current_episode} 集的分镜脚本，不要任何额外说明。"
+        "## 时长约束\n"
+        "每个镜头时长严格控制在 5~8 秒。\n"
+        "\n"
+        "## 风格要求\n"
+        "- 画面风格：${visual_style}\n"
+        "- 画面比例：${aspect_ratio}\n"
+        "- 情绪基调：${mood}\n"
+        "- 叙事方式：${narration_style}\n"
+        "${protagonist_constraint_section}\n"
+        "${character_profile_section}\n"
+        "\n"
+        "## 输出格式\n"
+        "只输出一个分镜，严格按以下格式，不要输出任何其他内容：\n"
+        "序号（Xs）画面：[动作与构图] | 旁白：[旁白文字或「无」] "
+        "| 音效：[环境音或「无」] | 光线：[光线描述]"
+    ),
+
+    "shot_user": (
+        "第 ${current_episode} 集（共 ${episode_count} 集）\n"
+        "【场景】${episode_scene}\n"
+        "\n"
+        "【剧情概要】\n"
+        "${episode_narrative}\n"
+        "\n"
+        "${previous_shots_section}\n"
+        "\n"
+        "请生成第 ${shot_num} 个分镜（序号 ${shot_label}），时长 5~8 秒。\n"
+        "${shot_hint}"
     ),
 }
 
@@ -229,23 +266,34 @@ SLOT_REFERENCE: dict[str, list[tuple[str, str]]] = {
         ("${episode_duration_seconds}", "每集预计时长(秒)"),
     ],
     "episode_system": [
-        ("${chars_min}", "最小字数（用户配置）"),
-        ("${chars_max}", "最大字数（用户配置）"),
         ("${visual_style}", "画面风格"),
         ("${aspect_ratio}", "画面比例"),
         ("${mood}", "情绪基调"),
         ("${narration_style}", "旁白风格"),
         ("${protagonist_constraint_section}", "宠物约束段落"),
-        ("${character_profile_section}", "角色视觉档案（自动注入）"),
     ],
     "episode_user": [
         ("${outline}", "故事大纲（自动填入）"),
         ("${current_episode}", "当前集号"),
         ("${episode_count}", "总集数"),
-        ("${chars_min}", "最小字数"),
-        ("${chars_max}", "最大字数"),
-        ("${episode_duration_seconds}", "每集预计时长(秒)"),
-        ("${retry_note}", "重试提示（字数超标时自动填入）"),
+    ],
+    "shot_system": [
+        ("${visual_style}", "画面风格"),
+        ("${aspect_ratio}", "画面比例"),
+        ("${mood}", "情绪基调"),
+        ("${narration_style}", "旁白风格"),
+        ("${protagonist_constraint_section}", "宠物约束段落"),
+        ("${character_profile_section}", "角色档案（自动注入）"),
+    ],
+    "shot_user": [
+        ("${current_episode}", "当前集号"),
+        ("${episode_count}", "总集数"),
+        ("${episode_scene}", "场景（自动提取）"),
+        ("${episode_narrative}", "剧情概要（自动提取）"),
+        ("${previous_shots_section}", "已生成的分镜（自动填入）"),
+        ("${shot_num}", "当前镜头序号"),
+        ("${shot_label}", "当前镜头标号（①②…）"),
+        ("${shot_hint}", "收尾提示（最后一镜自动填入）"),
     ],
 }
 
@@ -292,9 +340,14 @@ def build_context(raw_slots: dict) -> dict:
         if profile else ""
     )
 
-    # 单集生成所需的默认值
-    ctx.setdefault("retry_note", "")
+    # 逐镜生成所需的默认值
     ctx.setdefault("current_episode", 1)
+    ctx.setdefault("episode_scene", "")
+    ctx.setdefault("episode_narrative", "")
+    ctx.setdefault("previous_shots_section", "")
+    ctx.setdefault("shot_num", 1)
+    ctx.setdefault("shot_label", "①")
+    ctx.setdefault("shot_hint", "")
 
     return ctx
 
@@ -413,23 +466,69 @@ def extract_episode_profiles(
     return "\n\n".join(parsed_profiles.values())
 
 
-MIN_SHOT_SECONDS = 5
-MIN_EPISODE_SECONDS = 60
-
+# ---------------------------------------------------------------------------
+# 分镜解析
+# ---------------------------------------------------------------------------
 
 def parse_shot_durations(text: str) -> list[int]:
     """从分镜文本中提取每个镜头的秒数，如 ①（6s） → [6]。"""
     return [int(m) for m in re.findall(r'（(\d+)[sS秒]）', text)]
 
 
-def check_duration(text: str) -> tuple[bool, list[int], int]:
-    """校验分镜时长，返回 (是否通过, 各镜头秒数, 总秒数)。"""
-    durations = parse_shot_durations(text)
-    total = sum(durations)
-    ok = (all(d >= MIN_SHOT_SECONDS for d in durations)
-          and total >= MIN_EPISODE_SECONDS
-          and len(durations) > 0)
-    return ok, durations, total
+def get_shot_label(shot_num: int) -> str:
+    """返回分镜序号标签：①②…⑳，超出则用 (21) 形式。"""
+    idx = shot_num - 1
+    if 0 <= idx < len(CIRCLED_NUMBERS):
+        return CIRCLED_NUMBERS[idx]
+    return f"({shot_num})"
+
+
+# ---------------------------------------------------------------------------
+# 剧情框架解析与组装
+# ---------------------------------------------------------------------------
+
+def parse_episode_narrative(text: str) -> dict[str, str]:
+    """解析集剧情框架，提取标题行、场景、剧情概要、集末悬念。"""
+    result: dict[str, str] = {}
+
+    m = re.search(r'(第\s*\d+\s*集[：:]\s*.+)', text)
+    if m:
+        result['header'] = m.group(1).strip()
+
+    m = re.search(r'【场景】\s*(.+)', text)
+    if m:
+        result['scene'] = m.group(1).strip()
+
+    m = re.search(r'【剧情概要】\s*(.*?)(?=\s*【集末悬念】|\Z)', text, re.DOTALL)
+    if m:
+        result['narrative'] = m.group(1).strip()
+
+    m = re.search(r'【集末悬念】\s*(.+)', text)
+    if m:
+        result['cliffhanger'] = m.group(1).strip()
+
+    return result
+
+
+def assemble_episode(narrative: dict[str, str], shots: list[str]) -> str:
+    """将剧情框架和分镜列表组装为完整集脚本（不含视觉档案，由调用方注入）。"""
+    parts: list[str] = []
+
+    if 'header' in narrative:
+        parts.append(narrative['header'])
+
+    if 'scene' in narrative:
+        parts.append(f"\n\n【场景】{narrative['scene']}")
+
+    if shots:
+        parts.append("\n\n【分镜】")
+        for shot in shots:
+            parts.append(f"\n{shot.strip()}")
+
+    if 'cliffhanger' in narrative:
+        parts.append(f"\n\n【集末悬念】{narrative['cliffhanger']}")
+
+    return "".join(parts)
 
 
 def strip_visual_profiles(text: str) -> str:
