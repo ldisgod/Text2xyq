@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Text2xyq (小云雀剧本生成器) — a Tkinter desktop app that generates multi-episode short video scripts via LLM (OpenAI-compatible API, default: Alibaba DashScope/Qwen). The scripts are formatted for the "小云雀" AI video generation tool.
+Text2xyq (小云雀剧本生成器) — a CustomTkinter desktop app (dark theme) that generates multi-episode short video scripts via LLM (OpenAI-compatible API, default: Alibaba DashScope/Qwen). The scripts are formatted for the "小云雀" AI video generation tool.
 
 ## Running the App
 
 ```bash
-pip install -r requirements.txt   # only dependency: requests>=2.28.0
-python main.py
+uv sync          # install dependencies
+uv run main.py   # launch the app
 ```
 
-No tests, linting, or build steps exist.
+No tests, linting, or build steps exist. Package management via `uv` (`pyproject.toml` + `uv.lock`).
 
 ## Architecture
 
@@ -24,7 +24,7 @@ No tests, linting, or build steps exist.
 
 **Module responsibilities:**
 
-- `app.py` — Tkinter GUI (config page → main page), threading for LLM calls, episode retry loop with word count validation
+- `app.py` — CustomTkinter GUI (config page → main page), dark theme, threading for LLM calls, episode retry loop with word count validation
 - `templates.py` — prompt template system using `string.Template` (`${var}` syntax), slot option constants (styles, plots, moods, etc.), `build_context()` computes derived values and conditional sections
 - `generator.py` — builds `[system, user]` message lists for each pipeline stage by rendering templates with context; handles retry notes injection
 - `llm_client.py` — lightweight OpenAI-compatible HTTP client with streaming (SSE) and non-streaming modes

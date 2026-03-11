@@ -18,7 +18,7 @@ pip install pyinstaller
 
 echo.
 echo [2/3] 打包中...
-pyinstaller --onefile --windowed --name Text2xyq --clean main.py
+pyinstaller --onefile --windowed --name Text2xyq --collect-data customtkinter --clean main.py
 
 echo.
 if exist dist\Text2xyq.exe (

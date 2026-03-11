@@ -1,134 +1,105 @@
 """
-Text2xyq · 小云雀剧本生成器 — 主界面
-
-单窗口架构：配置页验证通过后切换到主生成页。
+Text2xyq · 小云雀剧本生成器 — 主界面（CustomTkinter）
 """
 from __future__ import annotations
 
-import re
 import sys
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
 
 import config
 import generator
 import templates
 from llm_client import LLMClient, LLMError
 
-MAX_RETRIES = 2  # 每集最多重试次数
+MAX_RETRIES = 2
 
-
-# ---------------------------------------------------------------------------
-# 可折叠区域
-# ---------------------------------------------------------------------------
-
-class _ToggleSection:
-    def __init__(self, parent: tk.Widget, title: str, initially_open: bool = False):
-        self.frame = ttk.Frame(parent)
-        self._title = title
-        self._open = initially_open
-
-        self._btn = ttk.Button(self.frame, text=self._label(), command=self.toggle)
-        self._btn.pack(fill=tk.X)
-
-        self.content = ttk.LabelFrame(self.frame, text=title, padding=8)
-        if initially_open:
-            self.content.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
-
-    def _label(self) -> str:
-        return f"{'▼' if self._open else '▶'} {self._title}"
-
-    def toggle(self):
-        self._open = not self._open
-        self._btn.configure(text=self._label())
-        if self._open:
-            self.content.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
-        else:
-            self.content.pack_forget()
+# 全局主题
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
 
 # ---------------------------------------------------------------------------
 # 提示词模板编辑器
 # ---------------------------------------------------------------------------
 
-class TemplateEditorDialog(tk.Toplevel):
+class TemplateEditorDialog(ctk.CTkToplevel):
 
     _TAB_LABELS = {
-        "character_profile_system": "角色档案 · System",
-        "character_profile_user":   "角色档案 · User",
-        "outline_system": "大纲 · System",
-        "outline_user":   "大纲 · User",
-        "episode_system": "分集 · System",
-        "episode_user":   "分集 · User",
+        "character_profile_system": "角色档案·System",
+        "character_profile_user":   "角色档案·User",
+        "outline_system": "大纲·System",
+        "outline_user":   "大纲·User",
+        "episode_system": "分集·System",
+        "episode_user":   "分集·User",
     }
 
-    def __init__(self, parent: tk.Widget, custom_templates: dict,
-                 on_save: callable):
+    def __init__(self, parent, custom_templates: dict, on_save: callable):
         super().__init__(parent)
         self.transient(parent)
         self.title("编辑提示词模板")
-        self.geometry("780x580")
+        self.geometry("820x620")
         self.grab_set()
         self._on_save = on_save
-        self._editors: dict[str, scrolledtext.ScrolledText] = {}
+        self._editors: dict[str, ctk.CTkTextbox] = {}
 
-        nb = ttk.Notebook(self)
-        nb.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+        tabview = ctk.CTkTabview(self)
+        tabview.pack(fill="both", expand=True, padx=12, pady=(12, 4))
 
         for name in templates.get_template_names():
-            outer = ttk.Frame(nb)
-            nb.add(outer, text=self._TAB_LABELS.get(name, name))
+            tab_label = self._TAB_LABELS.get(name, name)
+            tabview.add(tab_label)
+            tab = tabview.tab(tab_label)
 
-            # 编辑区
             content = custom_templates.get(name, templates.get_default_template(name))
-            editor = scrolledtext.ScrolledText(
-                outer, wrap=tk.WORD, font=("Consolas", 10))
-            editor.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 2))
-            editor.insert("1.0", content)
+            editor = ctk.CTkTextbox(tab, font=("Consolas", 13), wrap="word")
+            editor.pack(fill="both", expand=True, padx=4, pady=(4, 2))
+            editor.insert("0.0", content)
             self._editors[name] = editor
 
-            # 变量说明区（只读）
-            ref_frame = ttk.LabelFrame(
-                outer, text="可用变量（变量名请勿手动修改）", padding=4)
-            ref_frame.pack(fill=tk.X, padx=4, pady=(0, 4))
-
-            ref_text = tk.Text(
-                ref_frame, height=4, state="disabled",
-                font=("TkDefaultFont", 8), wrap=tk.WORD,
-                foreground="#555", background=self.cget("background"))
-            ref_text.pack(fill=tk.X)
+            # 变量说明
             ref_content = "  ".join(
                 f"{var}（{desc}）"
                 for var, desc in templates.SLOT_REFERENCE.get(name, []))
-            ref_text.configure(state="normal")
-            ref_text.insert("1.0", ref_content)
-            ref_text.configure(state="disabled")
+            ref_label = ctk.CTkLabel(
+                tab, text=f"可用变量：{ref_content}",
+                font=("TkDefaultFont", 11), text_color="gray",
+                wraplength=740, justify="left")
+            ref_label.pack(fill="x", padx=4, pady=(0, 2))
 
-            ttk.Button(
-                outer, text="恢复默认",
+            ctk.CTkButton(
+                tab, text="恢复默认", width=90, height=28,
+                fg_color="transparent", border_width=1,
+                text_color=("gray10", "gray90"),
                 command=lambda n=name: self._reset(n),
             ).pack(anchor="w", padx=4, pady=(0, 4))
 
-        # 底部操作栏
-        bottom = ttk.Frame(self)
-        bottom.pack(fill=tk.X, padx=8, pady=(0, 8))
-        self._save_btn = ttk.Button(bottom, text="保存", command=self._do_save)
-        self._save_btn.pack(side=tk.LEFT, padx=4)
-        self._save_hint = ttk.Label(bottom, text="", foreground="green")
-        self._save_hint.pack(side=tk.LEFT, padx=4)
-        ttk.Button(bottom, text="关闭", command=self.destroy).pack(
-            side=tk.RIGHT, padx=4)
+        # 底部
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkButton(bottom, text="保存", width=80, command=self._do_save).pack(
+            side="left", padx=4)
+        self._save_hint = ctk.CTkLabel(bottom, text="", text_color="#10B981")
+        self._save_hint.pack(side="left", padx=8)
+        ctk.CTkButton(
+            bottom, text="关闭", width=80,
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"),
+            command=self.destroy,
+        ).pack(side="right", padx=4)
 
     def _reset(self, name: str):
         ed = self._editors[name]
-        ed.delete("1.0", tk.END)
-        ed.insert("1.0", templates.get_default_template(name))
+        ed.delete("0.0", "end")
+        ed.insert("0.0", templates.get_default_template(name))
 
     def _do_save(self):
         result = {}
         for name, ed in self._editors.items():
-            text = ed.get("1.0", tk.END).rstrip("\n")
+            text = ed.get("0.0", "end").rstrip("\n")
             if text != templates.get_default_template(name):
                 result[name] = text
         self._on_save(result)
@@ -137,25 +108,22 @@ class TemplateEditorDialog(tk.Toplevel):
 
 
 # ---------------------------------------------------------------------------
-# 主应用（单窗口）
+# 主应用
 # ---------------------------------------------------------------------------
 
-class App(tk.Tk):
+class App(ctk.CTk):
 
-    # 配色方案
-    _C_PRIMARY = "#2563EB"      # 蓝 — 主操作
-    _C_PRIMARY_HOVER = "#1D4ED8"
-    _C_PRIMARY_DIS = "#93C5FD"
-    _C_ACCENT = "#6366F1"       # 靛 — 强调
-    _C_ACCENT_HOVER = "#4F46E5"
-    _C_ACCENT_DIS = "#A5B4FC"
-    _C_BG_DARK = "#1E293B"      # 深色背景
-    _C_BG_CARD = "#F8FAFC"      # 卡片底色
-    _C_BORDER = "#E2E8F0"
-    _C_TEXT_SEC = "#64748B"      # 次要文字
+    # 配色
+    _C_GREEN = "#10B981"
+    _C_GREEN_HOVER = "#059669"
+    _C_RED = "#EF4444"
+
+    # Tab 名称常量
+    _TAB_OUTLINE = "故事大纲"
+    _TAB_PROFILE = "角色视觉档案"
+    _TAB_EPISODES = "分镜脚本"
 
     def __init__(self):
-        # Windows 高 DPI 适配
         if sys.platform == "win32":
             try:
                 from ctypes import windll
@@ -165,8 +133,8 @@ class App(tk.Tk):
 
         super().__init__()
         self.title("Text2xyq · 小云雀剧本生成器")
+        self.geometry("560x440")
         self.minsize(480, 360)
-        self._setup_styles()
 
         self._llm_cfg = config.load_llm()
         self._gen_params = config.load_generation_params()
@@ -176,9 +144,8 @@ class App(tk.Tk):
         self._parsed_profiles: dict[str, str] = {}
 
         self._config_frame = self._build_config_page()
-        self._main_frame: ttk.Frame | None = None
-
-        self._config_frame.pack(fill=tk.BOTH, expand=True)
+        self._main_frame: ctk.CTkFrame | None = None
+        self._config_frame.pack(fill="both", expand=True)
 
         if (self._llm_cfg.get("base_url")
                 and self._llm_cfg.get("api_key")
@@ -186,110 +153,76 @@ class App(tk.Tk):
             self.after(100, self._auto_validate)
 
     # ==================================================================
-    # 主题与样式
-    # ==================================================================
-
-    def _setup_styles(self):
-        style = ttk.Style()
-        style.theme_use("clam")
-
-        # 全局字体
-        _FONT = ("TkDefaultFont", 10)
-        _FONT_BOLD = ("TkDefaultFont", 10, "bold")
-
-        style.configure(".", font=_FONT)
-        style.configure("TLabelframe.Label", font=_FONT_BOLD,
-                         foreground="#334155")
-
-        # 主操作按钮（一键生成全部）
-        style.configure("Primary.TButton",
-                         background=self._C_PRIMARY, foreground="white",
-                         font=_FONT_BOLD, padding=(12, 8))
-        style.map("Primary.TButton",
-                  background=[("active", self._C_PRIMARY_HOVER),
-                              ("disabled", self._C_PRIMARY_DIS)],
-                  foreground=[("disabled", "#F0F0F0")])
-
-        # 强调按钮（验证并进入）
-        style.configure("Accent.TButton",
-                         background=self._C_ACCENT, foreground="white",
-                         font=("TkDefaultFont", 11, "bold"), padding=(20, 10))
-        style.map("Accent.TButton",
-                  background=[("active", self._C_ACCENT_HOVER),
-                              ("disabled", self._C_ACCENT_DIS)],
-                  foreground=[("disabled", "#F0F0F0")])
-
-        # 进度条
-        style.configure("TProgressbar",
-                         troughcolor="#E5E7EB", background=self._C_PRIMARY)
-
-        # 配置页标题
-        style.configure("Title.TLabel",
-                         font=("TkDefaultFont", 20, "bold"),
-                         foreground=self._C_BG_DARK)
-        style.configure("Subtitle.TLabel",
-                         font=("TkDefaultFont", 10),
-                         foreground=self._C_TEXT_SEC)
-
-        # 状态栏
-        style.configure("Status.TLabel",
-                         font=("TkDefaultFont", 9),
-                         foreground=self._C_TEXT_SEC)
-
-    # ==================================================================
     # 配置页
     # ==================================================================
 
-    def _build_config_page(self) -> ttk.Frame:
-        page = ttk.Frame(self, padding=40)
+    def _build_config_page(self) -> ctk.CTkFrame:
+        page = ctk.CTkFrame(self, fg_color="transparent")
 
-        ttk.Label(
-            page, text="Text2xyq · 小云雀剧本生成器",
-            style="Title.TLabel",
-        ).pack(pady=(20, 8))
-        ttk.Label(
-            page, text="请配置 LLM 连接信息，验证通过后进入主界面",
-            style="Subtitle.TLabel",
+        # 居中容器
+        center = ctk.CTkFrame(page, fg_color="transparent")
+        center.place(relx=0.5, rely=0.45, anchor="center")
+
+        ctk.CTkLabel(
+            center, text="Text2xyq",
+            font=ctk.CTkFont(size=32, weight="bold"),
+        ).pack(pady=(0, 4))
+        ctk.CTkLabel(
+            center, text="小云雀剧本生成器",
+            font=ctk.CTkFont(size=14), text_color="gray",
         ).pack(pady=(0, 24))
 
-        form = ttk.Frame(page)
-        form.pack()
-        W = 48
+        # 卡片
+        card = ctk.CTkFrame(center, corner_radius=12)
+        card.pack(padx=20, pady=4)
 
-        ttk.Label(form, text="Base URL").grid(row=0, column=0, sticky="w", pady=6)
-        self._cfg_url_var = tk.StringVar(value=self._llm_cfg.get("base_url", ""))
-        ttk.Entry(form, textvariable=self._cfg_url_var, width=W).grid(
-            row=0, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=6)
+        W = 340
+        pad = 16
 
-        ttk.Label(form, text="API Key").grid(row=1, column=0, sticky="w", pady=6)
-        self._cfg_key_var = tk.StringVar(value=self._llm_cfg.get("api_key", ""))
-        self._cfg_key_entry = ttk.Entry(
-            form, textvariable=self._cfg_key_var, width=W, show="*")
-        self._cfg_key_entry.grid(
-            row=1, column=1, sticky="ew", padx=(8, 0), pady=6)
-        self._cfg_show_key = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            form, text="显示", variable=self._cfg_show_key,
-            command=self._toggle_key_vis,
-        ).grid(row=1, column=2, padx=(4, 0), pady=6)
+        ctk.CTkLabel(card, text="Base URL", anchor="w").pack(
+            fill="x", padx=pad, pady=(pad, 0))
+        self._cfg_url_var = ctk.StringVar(value=self._llm_cfg.get("base_url", ""))
+        ctk.CTkEntry(card, textvariable=self._cfg_url_var, width=W).pack(
+            padx=pad, pady=(2, 8))
 
-        ttk.Label(form, text="模型").grid(row=2, column=0, sticky="w", pady=6)
-        self._cfg_model_var = tk.StringVar(value=self._llm_cfg.get("model", "qwen-plus"))
-        ttk.Combobox(
-            form, textvariable=self._cfg_model_var,
-            values=templates.AVAILABLE_MODELS, width=W - 2,
-        ).grid(row=2, column=1, columnspan=2, sticky="ew", padx=(8, 0), pady=6)
+        ctk.CTkLabel(card, text="API Key", anchor="w").pack(
+            fill="x", padx=pad)
+        key_frame = ctk.CTkFrame(card, fg_color="transparent")
+        key_frame.pack(fill="x", padx=pad, pady=(2, 8))
+        self._cfg_key_var = ctk.StringVar(value=self._llm_cfg.get("api_key", ""))
+        self._cfg_key_entry = ctk.CTkEntry(
+            key_frame, textvariable=self._cfg_key_var, width=W - 60, show="*")
+        self._cfg_key_entry.pack(side="left")
+        self._cfg_show_key = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            key_frame, text="显示", variable=self._cfg_show_key,
+            width=50, command=self._toggle_key_vis,
+            checkbox_width=18, checkbox_height=18,
+        ).pack(side="left", padx=(8, 0))
 
-        form.columnconfigure(1, weight=1)
+        ctk.CTkLabel(card, text="模型", anchor="w").pack(
+            fill="x", padx=pad)
+        self._cfg_model_var = ctk.StringVar(
+            value=self._llm_cfg.get("model", "qwen-plus"))
+        ctk.CTkComboBox(
+            card, variable=self._cfg_model_var,
+            values=templates.AVAILABLE_MODELS, width=W,
+        ).pack(padx=pad, pady=(2, pad))
 
-        self._cfg_btn = ttk.Button(page, text="验证并进入",
-                                    command=self._on_validate,
-                                    style="Accent.TButton")
-        self._cfg_btn.pack(pady=(24, 8))
+        # 验证按钮
+        self._cfg_btn = ctk.CTkButton(
+            center, text="验证并进入",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            height=42, width=200, corner_radius=8,
+            fg_color=self._C_GREEN, hover_color=self._C_GREEN_HOVER,
+            command=self._on_validate,
+        )
+        self._cfg_btn.pack(pady=(20, 8))
 
-        self._cfg_status_var = tk.StringVar(value="")
-        self._cfg_status_lbl = ttk.Label(
-            page, textvariable=self._cfg_status_var, foreground="gray")
+        self._cfg_status_var = ctk.StringVar(value="")
+        self._cfg_status_lbl = ctk.CTkLabel(
+            center, textvariable=self._cfg_status_var,
+            text_color="gray", font=ctk.CTkFont(size=12))
         self._cfg_status_lbl.pack()
 
         return page
@@ -300,7 +233,7 @@ class App(tk.Tk):
 
     def _auto_validate(self):
         self._cfg_status_var.set("正在验证已保存的配置…")
-        self._cfg_status_lbl.configure(foreground="gray")
+        self._cfg_status_lbl.configure(text_color="gray")
         self._cfg_btn.configure(state="disabled")
         threading.Thread(target=self._validate_task,
                          args=(dict(self._llm_cfg),), daemon=True).start()
@@ -311,11 +244,11 @@ class App(tk.Tk):
         model = self._cfg_model_var.get().strip()
         if not url or not key or not model:
             self._cfg_status_var.set("请填写所有字段")
-            self._cfg_status_lbl.configure(foreground="red")
+            self._cfg_status_lbl.configure(text_color=self._C_RED)
             return
         self._llm_cfg = {"base_url": url, "api_key": key, "model": model}
         self._cfg_status_var.set("正在验证连接…")
-        self._cfg_status_lbl.configure(foreground="gray")
+        self._cfg_status_lbl.configure(text_color="gray")
         self._cfg_btn.configure(state="disabled")
         threading.Thread(target=self._validate_task,
                          args=(dict(self._llm_cfg),), daemon=True).start()
@@ -329,207 +262,201 @@ class App(tk.Tk):
         self._cfg_btn.configure(state="normal")
         if error:
             self._cfg_status_var.set(f"验证失败: {error[:120]}")
-            self._cfg_status_lbl.configure(foreground="red")
+            self._cfg_status_lbl.configure(text_color=self._C_RED)
             return
         config.save_llm(self._llm_cfg)
         self._switch_to_main()
 
     def _switch_to_main(self):
         self._config_frame.pack_forget()
+        self.geometry("1200x780")
         self.minsize(1060, 720)
         if self._main_frame is None:
             self._main_frame = self._build_main_page()
-        self._main_frame.pack(fill=tk.BOTH, expand=True)
+        self._main_frame.pack(fill="both", expand=True)
 
     def _switch_to_config(self):
         if self._main_frame:
             self._main_frame.pack_forget()
+        self.geometry("560x440")
         self.minsize(480, 360)
         self._cfg_url_var.set(self._llm_cfg.get("base_url", ""))
         self._cfg_key_var.set(self._llm_cfg.get("api_key", ""))
         self._cfg_model_var.set(self._llm_cfg.get("model", ""))
         self._cfg_status_var.set("")
-        self._config_frame.pack(fill=tk.BOTH, expand=True)
+        self._config_frame.pack(fill="both", expand=True)
 
     # ==================================================================
     # 主页面
     # ==================================================================
 
-    def _build_main_page(self) -> ttk.Frame:
-        page = ttk.Frame(self)
-        self._build_menu()
+    def _build_main_page(self) -> ctk.CTkFrame:
+        page = ctk.CTkFrame(self, fg_color="transparent")
 
-        paned = ttk.PanedWindow(page, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        # 左右分栏
+        page.grid_columnconfigure(1, weight=1)
+        page.grid_rowconfigure(0, weight=1)
 
-        # 左侧带滚动条
-        left_outer = ttk.Frame(paned)
-        paned.add(left_outer, weight=1)
+        # 左侧滚动面板
+        left = ctk.CTkScrollableFrame(
+            page, width=290, corner_radius=0,
+            fg_color=("gray92", "gray14"))
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 0))
 
-        self._left_canvas = tk.Canvas(left_outer, highlightthickness=0)
-        vsb = ttk.Scrollbar(left_outer, orient=tk.VERTICAL,
-                             command=self._left_canvas.yview)
-        self._left_inner = ttk.Frame(self._left_canvas)
-        self._left_inner.bind(
-            "<Configure>",
-            lambda _: self._left_canvas.configure(
-                scrollregion=self._left_canvas.bbox("all")))
-        self._cw_id = self._left_canvas.create_window(
-            (0, 0), window=self._left_inner, anchor="nw")
-        self._left_canvas.bind(
-            "<Configure>",
-            lambda e: self._left_canvas.itemconfigure(self._cw_id, width=e.width))
-        self._left_canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._build_left_panels(left)
 
-        self._build_left_panels()
-        self.after(200, self._rebind_scroll)
+        # 右侧 Tabview
+        right = ctk.CTkFrame(page, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=8)
+        right.grid_rowconfigure(0, weight=1)
+        right.grid_columnconfigure(0, weight=1)
 
-        # 右侧
-        right = ttk.PanedWindow(paned, orient=tk.VERTICAL)
-        paned.add(right, weight=2)
         self._build_right(right)
 
         return page
-
-    # ---- 滚轮（只绑定 inner frame 子控件，不用 bind_all）----
-
-    def _rebind_scroll(self):
-        self._bind_scroll_recursive(self._left_inner)
-
-    def _bind_scroll_recursive(self, widget: tk.Widget):
-        widget.bind("<MouseWheel>", self._on_left_scroll, add="+")
-        widget.bind("<Button-4>", self._on_left_scroll, add="+")
-        widget.bind("<Button-5>", self._on_left_scroll, add="+")
-        for child in widget.winfo_children():
-            self._bind_scroll_recursive(child)
-
-    def _on_left_scroll(self, event):
-        if event.num == 4:
-            self._left_canvas.yview_scroll(-1, "units")
-        elif event.num == 5:
-            self._left_canvas.yview_scroll(1, "units")
-        else:
-            self._left_canvas.yview_scroll(-event.delta, "units")
-
-    # ---- 菜单 ----
-
-    def _build_menu(self):
-        bar = tk.Menu(self)
-        m = tk.Menu(bar, tearoff=0)
-        m.add_command(label="重新配置 LLM", command=self._switch_to_config)
-        m.add_command(label="编辑提示词模板", command=self._open_template_editor)
-        m.add_separator()
-        m.add_command(label="退出", command=self.quit)
-        bar.add_cascade(label="设置", menu=m)
-        self.config(menu=bar)
 
     # ==================================================================
     # 左侧面板
     # ==================================================================
 
-    def _build_left_panels(self):
-        parent = self._left_inner
+    def _build_left_panels(self, parent):
+        pad = 8
 
-        # 模型选择（主页可切换）
-        model_frame = ttk.Frame(parent)
-        model_frame.pack(fill=tk.X, padx=4, pady=(0, 6))
-        ttk.Label(model_frame, text="模型：").pack(side=tk.LEFT)
-        self._model_var = tk.StringVar(
-            value=self._llm_cfg.get("model", "qwen-plus"))
-        model_cb = ttk.Combobox(
-            model_frame, textvariable=self._model_var,
-            values=templates.AVAILABLE_MODELS, width=22)
-        model_cb.pack(side=tk.LEFT, padx=(4, 0))
-        model_cb.bind("<<ComboboxSelected>>", self._on_model_change)
-        model_cb.bind("<FocusOut>", self._on_model_change)
-
-        core = ttk.LabelFrame(parent, text="选材设定", padding=8)
-        core.pack(fill=tk.X, padx=4, pady=(0, 6))
-        self._build_core(core)
-
-        dur = ttk.LabelFrame(parent, text="时长控制", padding=8)
-        dur.pack(fill=tk.X, padx=4, pady=(0, 6))
-        self._build_duration(dur)
-
-        self._style_sec = _ToggleSection(parent, "风格设置")
-        self._style_sec.frame.pack(fill=tk.X, padx=4, pady=(0, 6))
-        self._build_style(self._style_sec.content)
-
-        ttk.Button(
-            parent, text="编辑提示词模板",
+        # 顶部工具栏
+        toolbar = ctk.CTkFrame(parent, fg_color="transparent")
+        toolbar.pack(fill="x", padx=pad, pady=(pad, 4))
+        ctk.CTkButton(
+            toolbar, text="⚙ 重新配置", width=100, height=28,
+            font=ctk.CTkFont(size=12),
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"),
+            command=self._switch_to_config,
+        ).pack(side="left")
+        ctk.CTkButton(
+            toolbar, text="📝 编辑模板", width=100, height=28,
+            font=ctk.CTkFont(size=12),
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"),
             command=self._open_template_editor,
-        ).pack(fill=tk.X, padx=4, pady=(0, 6))
+        ).pack(side="right")
 
-        ttk.Separator(parent).pack(fill=tk.X, padx=4, pady=4)
+        # 模型选择
+        ctk.CTkLabel(parent, text="模型", font=ctk.CTkFont(size=12),
+                      anchor="w").pack(fill="x", padx=pad, pady=(8, 0))
+        self._model_var = ctk.StringVar(
+            value=self._llm_cfg.get("model", "qwen-plus"))
+        model_cb = ctk.CTkComboBox(
+            parent, variable=self._model_var,
+            values=templates.AVAILABLE_MODELS, width=260)
+        model_cb.pack(padx=pad, pady=(2, 8))
+        model_cb.configure(command=lambda _: self._on_model_change())
 
-        self._btn_outline = ttk.Button(
-            parent, text="生成故事大纲", command=self._on_generate_outline)
-        self._btn_outline.pack(fill=tk.X, padx=4, pady=2, ipady=4)
+        # --- 选材设定 ---
+        self._build_section_label(parent, "选材设定")
+        core_frame = ctk.CTkFrame(parent, corner_radius=8)
+        core_frame.pack(fill="x", padx=pad, pady=(0, 8))
+        self._build_core(core_frame)
 
-        self._btn_profile = ttk.Button(
-            parent, text="生成角色视觉档案",
+        # --- 时长控制 ---
+        self._build_section_label(parent, "时长控制")
+        dur_frame = ctk.CTkFrame(parent, corner_radius=8)
+        dur_frame.pack(fill="x", padx=pad, pady=(0, 8))
+        self._build_duration(dur_frame)
+
+        # --- 风格设置 ---
+        self._build_section_label(parent, "风格设置")
+        style_frame = ctk.CTkFrame(parent, corner_radius=8)
+        style_frame.pack(fill="x", padx=pad, pady=(0, 8))
+        self._build_style(style_frame)
+
+        # --- 分隔线 ---
+        ctk.CTkFrame(parent, height=1, fg_color="gray40").pack(
+            fill="x", padx=pad, pady=8)
+
+        # 生成按钮
+        self._btn_outline = ctk.CTkButton(
+            parent, text="生成故事大纲", height=36,
+            command=self._on_generate_outline)
+        self._btn_outline.pack(fill="x", padx=pad, pady=2)
+
+        self._btn_profile = ctk.CTkButton(
+            parent, text="生成角色视觉档案", height=36,
             command=self._on_generate_profile, state="disabled")
-        self._btn_profile.pack(fill=tk.X, padx=4, pady=2, ipady=4)
+        self._btn_profile.pack(fill="x", padx=pad, pady=2)
 
-        self._btn_episodes = ttk.Button(
-            parent, text="生成各集提示词",
+        self._btn_episodes = ctk.CTkButton(
+            parent, text="生成各集提示词", height=36,
             command=self._on_generate_episodes, state="disabled")
-        self._btn_episodes.pack(fill=tk.X, padx=4, pady=2, ipady=4)
+        self._btn_episodes.pack(fill="x", padx=pad, pady=2)
 
-        self._btn_all = ttk.Button(
-            parent, text="一键生成全部", command=self._on_generate_all,
-            style="Primary.TButton")
-        self._btn_all.pack(fill=tk.X, padx=4, pady=(6, 2))
+        self._btn_all = ctk.CTkButton(
+            parent, text="✦ 一键生成全部", height=44,
+            font=ctk.CTkFont(size=15, weight="bold"),
+            fg_color=self._C_GREEN, hover_color=self._C_GREEN_HOVER,
+            command=self._on_generate_all)
+        self._btn_all.pack(fill="x", padx=pad, pady=(8, 4))
 
-        self._progress = ttk.Progressbar(parent, mode="determinate", maximum=100)
-        self._progress.pack(fill=tk.X, padx=4, pady=(8, 2))
+        # 进度条
+        self._progress = ctk.CTkProgressBar(parent, height=6)
+        self._progress.pack(fill="x", padx=pad, pady=(8, 2))
+        self._progress.set(0)
 
-        self._status_var = tk.StringVar(value="就绪")
-        ttk.Label(parent, textvariable=self._status_var,
-                  style="Status.TLabel").pack(anchor="w", padx=4)
+        self._status_var = ctk.StringVar(value="就绪")
+        ctk.CTkLabel(
+            parent, textvariable=self._status_var,
+            font=ctk.CTkFont(size=11), text_color="gray",
+            anchor="w",
+        ).pack(fill="x", padx=pad, pady=(0, pad))
+
+    def _build_section_label(self, parent, text: str):
+        ctk.CTkLabel(
+            parent, text=text,
+            font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
+        ).pack(fill="x", padx=8, pady=(8, 2))
 
     # ---- 选材设定 ----
 
-    def _build_core(self, f: ttk.LabelFrame):
-        r = 0
-
-        def combo(label, var, values, row, cmd=None):
-            ttk.Label(f, text=label).grid(row=row, column=0, sticky="w", pady=3)
-            cb = ttk.Combobox(f, textvariable=var, values=values,
-                              state="readonly", width=18)
-            cb.grid(row=row, column=1, sticky="ew", pady=3, padx=(8, 0))
-            if cmd:
-                cb.bind("<<ComboboxSelected>>", cmd)
-            return cb
+    def _build_core(self, f):
+        pad = 10
 
         # 主角类型
-        self._protagonist_var = tk.StringVar(value=templates.PROTAGONIST_TYPES[0])
-        combo("主角类型：", self._protagonist_var,
-              templates.PROTAGONIST_TYPES, r, self._on_protagonist_change)
-        r += 1
+        ctk.CTkLabel(f, text="主角类型", font=ctk.CTkFont(size=12),
+                      anchor="w").pack(fill="x", padx=pad, pady=(pad, 0))
+        self._protagonist_var = ctk.StringVar(value=templates.PROTAGONIST_TYPES[0])
+        ctk.CTkSegmentedButton(
+            f, values=templates.PROTAGONIST_TYPES,
+            variable=self._protagonist_var,
+            command=self._on_protagonist_change,
+        ).pack(fill="x", padx=pad, pady=(2, 8))
 
-        # 主角形象（多选 Checkbuttons）
-        ttk.Label(f, text="主角形象：").grid(row=r, column=0, sticky="nw", pady=3)
-        self._char_check_frame = ttk.Frame(f)
-        self._char_check_frame.grid(row=r, column=1, sticky="ew", pady=3, padx=(8, 0))
-        self._character_vars: dict[str, tk.BooleanVar] = {}
+        # 主角形象（多选）
+        ctk.CTkLabel(f, text="主角形象", font=ctk.CTkFont(size=12),
+                      anchor="w").pack(fill="x", padx=pad)
+        self._char_check_frame = ctk.CTkFrame(f, fg_color="transparent")
+        self._char_check_frame.pack(fill="x", padx=pad, pady=(2, 8))
+        self._character_vars: dict[str, ctk.BooleanVar] = {}
         self._rebuild_char_checks()
-        r += 1
 
         # 故事风格
-        self._style_var = tk.StringVar(value=templates.STYLES[0])
-        combo("故事风格：", self._style_var, templates.STYLES, r,
-              self._on_style_change)
-        r += 1
+        ctk.CTkLabel(f, text="故事风格", font=ctk.CTkFont(size=12),
+                      anchor="w").pack(fill="x", padx=pad)
+        self._style_var = ctk.StringVar(value=templates.STYLES[0])
+        ctk.CTkComboBox(
+            f, variable=self._style_var,
+            values=templates.STYLES, width=240,
+            command=self._on_style_change,
+        ).pack(padx=pad, pady=(2, 8))
 
-        # 核心剧情（跟随风格更新）
+        # 核心剧情
         init_plots = templates.STYLE_PLOTS.get(templates.STYLES[0], templates.PLOTS)
-        self._plot_var = tk.StringVar(value=init_plots[0])
-        self._cb_plot = combo("核心剧情：", self._plot_var, init_plots, r)
-
-        f.columnconfigure(1, weight=1)
+        ctk.CTkLabel(f, text="核心剧情", font=ctk.CTkFont(size=12),
+                      anchor="w").pack(fill="x", padx=pad)
+        self._plot_var = ctk.StringVar(value=init_plots[0])
+        self._cb_plot = ctk.CTkComboBox(
+            f, variable=self._plot_var,
+            values=init_plots, width=240,
+        )
+        self._cb_plot.pack(padx=pad, pady=(2, pad))
 
     def _rebuild_char_checks(self):
         for w in self._char_check_frame.winfo_children():
@@ -538,15 +465,14 @@ class App(tk.Tk):
         chars = templates.CHARACTER_TYPES_MAP.get(
             self._protagonist_var.get(), [])
         for i, ch in enumerate(chars):
-            var = tk.BooleanVar(value=(i == 0))
+            var = ctk.BooleanVar(value=(i == 0))
             self._character_vars[ch] = var
             row, col = divmod(i, 3)
-            ttk.Checkbutton(
+            ctk.CTkCheckBox(
                 self._char_check_frame, text=ch, variable=var,
-            ).grid(row=row, column=col, sticky="w", padx=2, pady=1)
-        # 重新绑定滚轮
-        if hasattr(self, "_left_inner"):
-            self.after(50, self._rebind_scroll)
+                checkbox_width=18, checkbox_height=18,
+                font=ctk.CTkFont(size=12),
+            ).grid(row=row, column=col, sticky="w", padx=4, pady=2)
 
     def _on_protagonist_change(self, _=None):
         self._rebuild_char_checks()
@@ -554,7 +480,7 @@ class App(tk.Tk):
     def _on_style_change(self, _=None):
         style = self._style_var.get()
         plots = templates.STYLE_PLOTS.get(style, templates.PLOTS)
-        self._cb_plot["values"] = plots
+        self._cb_plot.configure(values=plots)
         self._plot_var.set(plots[0] if plots else "")
 
     def _on_model_change(self, _=None):
@@ -565,46 +491,59 @@ class App(tk.Tk):
 
     # ---- 时长控制 ----
 
-    def _build_duration(self, f: ttk.LabelFrame):
-        r = 0
-        ttk.Label(f, text="生成集数：").grid(row=r, column=0, sticky="w", pady=3)
+    def _build_duration(self, f):
+        pad = 10
+
+        ctk.CTkLabel(f, text="生成集数", font=ctk.CTkFont(size=12),
+                      anchor="w").pack(fill="x", padx=pad, pady=(pad, 0))
         self._episode_var = tk.IntVar(
             value=self._gen_params.get("episode_count", 20))
-        sb = ttk.Spinbox(f, from_=1, to=100, textvariable=self._episode_var,
-                         width=8, command=self._update_duration)
-        sb.grid(row=r, column=1, sticky="w", pady=3, padx=(8, 0))
-        sb.bind("<KeyRelease>", lambda _: self._update_duration())
-        r += 1
+        ep_frame = ctk.CTkFrame(f, fg_color="transparent")
+        ep_frame.pack(fill="x", padx=pad, pady=(2, 8))
+        self._ep_entry = ctk.CTkEntry(
+            ep_frame, textvariable=self._episode_var, width=80)
+        self._ep_entry.pack(side="left")
+        ctk.CTkLabel(ep_frame, text="集", font=ctk.CTkFont(size=12)).pack(
+            side="left", padx=4)
+        self._ep_entry.bind("<KeyRelease>", lambda _: self._update_duration())
 
-        ttk.Label(f, text="每集字数范围：").grid(row=r, column=0, sticky="w", pady=3)
-        range_frame = ttk.Frame(f)
-        range_frame.grid(row=r, column=1, sticky="w", pady=3, padx=(8, 0))
+        ctk.CTkLabel(f, text="每集字数范围", font=ctk.CTkFont(size=12),
+                      anchor="w").pack(fill="x", padx=pad)
+        range_frame = ctk.CTkFrame(f, fg_color="transparent")
+        range_frame.pack(fill="x", padx=pad, pady=(2, 4))
         self._chars_min_var = tk.IntVar(
             value=self._gen_params.get("chars_min", 270))
-        sb_min = ttk.Spinbox(range_frame, from_=30, to=5000, increment=10,
-                             textvariable=self._chars_min_var, width=6,
-                             command=self._update_duration)
-        sb_min.pack(side=tk.LEFT)
-        sb_min.bind("<KeyRelease>", lambda _: self._update_duration())
-        ttk.Label(range_frame, text=" ~ ").pack(side=tk.LEFT)
+        ctk.CTkEntry(
+            range_frame, textvariable=self._chars_min_var, width=70,
+        ).pack(side="left")
+        ctk.CTkLabel(range_frame, text=" ~ ").pack(side="left")
         self._chars_max_var = tk.IntVar(
             value=self._gen_params.get("chars_max", 330))
-        sb_max = ttk.Spinbox(range_frame, from_=30, to=5000, increment=10,
-                             textvariable=self._chars_max_var, width=6,
-                             command=self._update_duration)
-        sb_max.pack(side=tk.LEFT)
-        sb_max.bind("<KeyRelease>", lambda _: self._update_duration())
-        ttk.Label(range_frame, text=" 字").pack(side=tk.LEFT)
-        r += 1
+        ctk.CTkEntry(
+            range_frame, textvariable=self._chars_max_var, width=70,
+        ).pack(side="left")
+        ctk.CTkLabel(range_frame, text=" 字").pack(side="left", padx=4)
 
-        self._duration_label = ttk.Label(f, text="", style="Status.TLabel")
-        self._duration_label.grid(
-            row=r, column=0, columnspan=2, sticky="w", pady=(2, 4))
+        # bind key release for live update
+        for child in range_frame.winfo_children():
+            if isinstance(child, ctk.CTkEntry):
+                child.bind("<KeyRelease>", lambda _: self._update_duration())
 
-        f.columnconfigure(1, weight=1)
-        self._update_duration()
+        self._duration_label = ctk.CTkLabel(
+            f, text="", font=ctk.CTkFont(size=11), text_color="gray",
+            anchor="w")
+        self._duration_label.pack(fill="x", padx=pad, pady=(0, pad))
+        self._do_update_duration()
+
+    _duration_debounce_id: str | None = None
 
     def _update_duration(self):
+        if self._duration_debounce_id:
+            self.after_cancel(self._duration_debounce_id)
+        self._duration_debounce_id = self.after(150, self._do_update_duration)
+
+    def _do_update_duration(self):
+        self._duration_debounce_id = None
         try:
             cmin = self._chars_min_var.get()
             cmax = self._chars_max_var.get()
@@ -621,75 +560,87 @@ class App(tk.Tk):
 
     # ---- 风格设置 ----
 
-    def _build_style(self, f: tk.Widget):
-        def combo(label, var, values, row):
-            ttk.Label(f, text=label).grid(row=row, column=0, sticky="w", pady=3)
-            ttk.Combobox(f, textvariable=var, values=values,
-                         state="readonly", width=18).grid(
-                row=row, column=1, sticky="ew", pady=3, padx=(8, 0))
-
-        r = 0
-        self._visual_var = tk.StringVar(
-            value=self._gen_params.get("visual_style", "写实"))
-        combo("画面风格：", self._visual_var, templates.VISUAL_STYLES, r); r += 1
-
-        self._ratio_var = tk.StringVar(
-            value=self._gen_params.get("aspect_ratio", "9:16竖屏"))
-        combo("画面比例：", self._ratio_var, templates.ASPECT_RATIOS, r); r += 1
-
-        self._mood_var = tk.StringVar(
-            value=self._gen_params.get("mood", "自动"))
-        combo("情绪基调：", self._mood_var, templates.MOODS, r); r += 1
-
-        self._narration_var = tk.StringVar(
-            value=self._gen_params.get("narration_style", "第三人称旁白"))
-        combo("旁白风格：", self._narration_var, templates.NARRATION_STYLES, r); r += 1
-
-        self._pacing_var = tk.StringVar(
-            value=self._gen_params.get("pacing", "中等"))
-        combo("节奏：", self._pacing_var, templates.PACINGS, r)
-
-        f.columnconfigure(1, weight=1)
+    def _build_style(self, f):
+        pad = 10
+        items = [
+            ("画面风格", "_visual_var",
+             self._gen_params.get("visual_style", "写实"), templates.VISUAL_STYLES),
+            ("画面比例", "_ratio_var",
+             self._gen_params.get("aspect_ratio", "9:16竖屏"), templates.ASPECT_RATIOS),
+            ("情绪基调", "_mood_var",
+             self._gen_params.get("mood", "自动"), templates.MOODS),
+            ("旁白风格", "_narration_var",
+             self._gen_params.get("narration_style", "第三人称旁白"), templates.NARRATION_STYLES),
+            ("节奏", "_pacing_var",
+             self._gen_params.get("pacing", "中等"), templates.PACINGS),
+        ]
+        for i, (label, attr, default, values) in enumerate(items):
+            ctk.CTkLabel(f, text=label, font=ctk.CTkFont(size=12),
+                          anchor="w").pack(fill="x", padx=pad,
+                                           pady=(pad if i == 0 else 0, 0))
+            var = ctk.StringVar(value=default)
+            setattr(self, attr, var)
+            ctk.CTkComboBox(
+                f, variable=var, values=values, width=240,
+            ).pack(padx=pad, pady=(2, 8 if i < len(items) - 1 else pad))
 
     # ==================================================================
     # 右侧面板
     # ==================================================================
 
-    def _build_right(self, parent: ttk.PanedWindow):
-        of = ttk.LabelFrame(parent, text="故事大纲", padding=6)
-        parent.add(of, weight=1)
-        self._outline_box = scrolledtext.ScrolledText(
-            of, wrap=tk.WORD, font=("TkDefaultFont", 10), state="disabled")
-        self._outline_box.pack(fill=tk.BOTH, expand=True)
+    def _build_right(self, parent):
+        tabview = ctk.CTkTabview(parent, corner_radius=8)
+        tabview.grid(row=0, column=0, sticky="nsew")
 
-        pf = ttk.LabelFrame(parent, text="角色视觉档案", padding=6)
-        parent.add(pf, weight=1)
-        self._profile_box = scrolledtext.ScrolledText(
-            pf, wrap=tk.WORD, font=("TkDefaultFont", 10), state="disabled")
-        self._profile_box.pack(fill=tk.BOTH, expand=True)
-        profile_bar = ttk.Frame(pf)
-        profile_bar.pack(fill=tk.X, pady=(4, 0))
-        ttk.Label(
-            profile_bar,
+        tabview.add(self._TAB_OUTLINE)
+        tabview.add(self._TAB_PROFILE)
+        tabview.add(self._TAB_EPISODES)
+
+        # 大纲
+        tab_outline = tabview.tab(self._TAB_OUTLINE)
+        tab_outline.grid_rowconfigure(0, weight=1)
+        tab_outline.grid_columnconfigure(0, weight=1)
+        self._outline_box = ctk.CTkTextbox(
+            tab_outline, font=("TkDefaultFont", 13), wrap="word",
+            state="disabled")
+        self._outline_box.grid(row=0, column=0, sticky="nsew")
+
+        # 角色档案
+        tab_profile = tabview.tab(self._TAB_PROFILE)
+        tab_profile.grid_rowconfigure(0, weight=1)
+        tab_profile.grid_columnconfigure(0, weight=1)
+        self._profile_box = ctk.CTkTextbox(
+            tab_profile, font=("TkDefaultFont", 13), wrap="word",
+            state="disabled")
+        self._profile_box.grid(row=0, column=0, sticky="nsew")
+        profile_hint = ctk.CTkLabel(
+            tab_profile,
             text="档案会按角色自动提取并注入到每集脚本，确保视觉描述逐字一致",
-            style="Status.TLabel",
-        ).pack(side=tk.LEFT, padx=4)
+            font=ctk.CTkFont(size=11), text_color="gray")
+        profile_hint.grid(row=1, column=0, sticky="w", padx=4, pady=(4, 0))
 
-        ef = ttk.LabelFrame(parent, text="各集分镜脚本（供小云雀使用）", padding=6)
-        parent.add(ef, weight=2)
-        self._episode_box = scrolledtext.ScrolledText(
-            ef, wrap=tk.WORD, font=("TkDefaultFont", 10), state="disabled")
-        self._episode_box.pack(fill=tk.BOTH, expand=True)
+        # 分镜脚本
+        tab_ep = tabview.tab(self._TAB_EPISODES)
+        tab_ep.grid_rowconfigure(0, weight=1)
+        tab_ep.grid_columnconfigure(0, weight=1)
+        self._episode_box = ctk.CTkTextbox(
+            tab_ep, font=("TkDefaultFont", 13), wrap="word",
+            state="disabled")
+        self._episode_box.grid(row=0, column=0, sticky="nsew")
 
-        self._stats_label = ttk.Label(ef, text="", style="Status.TLabel")
-        self._stats_label.pack(anchor="w", pady=(4, 0))
+        self._stats_label = ctk.CTkLabel(
+            tab_ep, text="", font=ctk.CTkFont(size=11), text_color="gray",
+            anchor="w")
+        self._stats_label.grid(row=1, column=0, sticky="w", padx=4, pady=(4, 0))
 
-        bar = ttk.Frame(ef)
-        bar.pack(fill=tk.X, pady=(4, 0))
-        ttk.Button(bar, text="复制全部", command=self._copy_episodes).pack(
-            side=tk.LEFT, padx=4)
-        ttk.Button(bar, text="导出 TXT", command=self._export_txt).pack(
-            side=tk.LEFT, padx=4)
+        bar = ctk.CTkFrame(tab_ep, fg_color="transparent")
+        bar.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ctk.CTkButton(bar, text="复制全部", width=90, height=30,
+                        command=self._copy_episodes).pack(side="left", padx=4)
+        ctk.CTkButton(bar, text="导出 TXT", width=90, height=30,
+                        command=self._export_txt).pack(side="left", padx=4)
+
+        self._tabview = tabview
 
     # ==================================================================
     # 槽位收集 & 保存
@@ -697,7 +648,7 @@ class App(tk.Tk):
 
     def _collect_slots(self) -> dict:
         selected_chars = [c for c, v in self._character_vars.items() if v.get()]
-        if not selected_chars:  # 防止全不选
+        if not selected_chars:
             selected_chars = list(self._character_vars.keys())[:1]
         return {
             "protagonist_type": self._protagonist_var.get(),
@@ -715,11 +666,12 @@ class App(tk.Tk):
             "character_profile": self._character_profile,
         }
 
-    def _save_gen_params(self):
+    def _save_gen_params(self) -> dict:
         slots = self._collect_slots()
         skip = {"protagonist_type", "style", "character_type", "plot"}
         config.save_generation_params(
             {k: v for k, v in slots.items() if k not in skip})
+        return slots
 
     # ==================================================================
     # LLM 客户端
@@ -745,20 +697,31 @@ class App(tk.Tk):
             state="disabled" if active else
             ("normal" if has_outline else "disabled"))
         if not active:
-            self._progress["value"] = 0
+            self._progress.set(0)
 
-    def _set_text(self, widget: scrolledtext.ScrolledText, text: str):
+    def _reset_progress(self):
+        """停止不确定模式进度条并重置。"""
+        self._progress.stop()
+        self._progress.configure(mode="determinate")
+        self._progress.set(0)
+
+    def _finish_generation(self):
+        """生成结束时的统一清理（在主线程调用）。"""
+        self._reset_progress()
+        self._set_generating(False)
+
+    def _set_text(self, widget: ctk.CTkTextbox, text: str):
         widget.configure(state="normal")
-        widget.delete("1.0", tk.END)
+        widget.delete("0.0", "end")
         if text:
-            widget.insert(tk.END, text)
+            widget.insert("end", text)
         widget.configure(state="disabled")
 
-    def _append_text(self, widget: scrolledtext.ScrolledText, text: str):
+    def _append_text(self, widget: ctk.CTkTextbox, text: str):
         def _do():
             widget.configure(state="normal")
-            widget.insert(tk.END, text)
-            widget.see(tk.END)
+            widget.insert("end", text)
+            widget.see("end")
             widget.configure(state="disabled")
         self.after(0, _do)
 
@@ -777,11 +740,11 @@ class App(tk.Tk):
         self._stats_label.configure(text="")
         self._status_var.set("正在生成故事大纲…")
         self._progress.configure(mode="indeterminate")
-        self._progress.start(12)
-        self._save_gen_params()
+        self._progress.start()
+        slots = self._save_gen_params()
+        self._tabview.set(self._TAB_OUTLINE)
 
         client = self._make_client()
-        slots = self._collect_slots()
         ct = self._custom_templates
 
         def task():
@@ -798,10 +761,7 @@ class App(tk.Tk):
                     "生成失败", str(e), parent=self))
                 self.after(0, lambda: self._status_var.set("生成失败"))
             finally:
-                self.after(0, lambda: self._progress.stop())
-                self.after(0, lambda: self._progress.configure(
-                    mode="determinate", value=0))
-                self.after(0, lambda: self._set_generating(False))
+                self.after(0, self._finish_generation)
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -815,7 +775,8 @@ class App(tk.Tk):
         self._parsed_profiles = {}
         self._status_var.set("正在生成角色视觉档案…")
         self._progress.configure(mode="indeterminate")
-        self._progress.start(12)
+        self._progress.start()
+        self._tabview.set(self._TAB_PROFILE)
 
         client = self._make_client()
         slots = self._collect_slots()
@@ -836,15 +797,11 @@ class App(tk.Tk):
                     "生成失败", str(e), parent=self))
                 self.after(0, lambda: self._status_var.set("生成失败"))
             finally:
-                self.after(0, lambda: self._progress.stop())
-                self.after(0, lambda: self._progress.configure(
-                    mode="determinate", value=0))
-                self.after(0, lambda: self._set_generating(False))
+                self.after(0, self._finish_generation)
 
         threading.Thread(target=task, daemon=True).start()
 
     def _apply_profile(self, raw: str):
-        """解析 LLM 返回的视觉档案（JSON 优先）并更新 UI 和内部状态。"""
         parsed = templates.parse_character_profiles(raw)
         if parsed:
             display = "\n\n".join(parsed.values())
@@ -863,10 +820,10 @@ class App(tk.Tk):
         self._set_generating(True)
         self._set_text(self._episode_box, "")
         self._stats_label.configure(text="")
-        self._save_gen_params()
+        slots = self._save_gen_params()
+        self._tabview.set(self._TAB_EPISODES)
 
         client = self._make_client()
-        slots = self._collect_slots()
         outline = self._outline_text
         ct = self._custom_templates
         self._run_episodes_task(client, slots, outline, ct)
@@ -881,27 +838,22 @@ class App(tk.Tk):
         self._parsed_profiles = {}
         self._stats_label.configure(text="")
         self._progress.configure(mode="indeterminate")
-        self._progress.start(12)
+        self._progress.start()
         self._status_var.set("正在生成故事大纲…")
-        self._save_gen_params()
+        slots = self._save_gen_params()
+        self._tabview.set(self._TAB_OUTLINE)
 
         client = self._make_client()
-        slots = self._collect_slots()
         ct = self._custom_templates
-
-        def _stop_indeterminate():
-            self._progress.stop()
-            self._progress.configure(mode="determinate", value=0)
 
         def _fail(e: Exception):
             messagebox.showerror("生成失败", str(e), parent=self)
             self._status_var.set("生成失败")
-            _stop_indeterminate()
-            self._set_generating(False)
+            self._finish_generation()
 
         def task():
             try:
-                # 1. 生成大纲
+                # 1. 大纲
                 msgs = generator.build_outline_messages(slots, ct)
                 parts: list[str] = []
                 for chunk in client.chat_stream(msgs):
@@ -910,8 +862,9 @@ class App(tk.Tk):
                 self._outline_text = "".join(parts)
                 outline = self._outline_text
 
-                # 2. 生成角色视觉档案
+                # 2. 角色视觉档案
                 self.after(0, lambda: self._status_var.set("正在生成角色视觉档案…"))
+                self.after(0, lambda: self._tabview.set(self._TAB_PROFILE))
                 profile_slots = dict(slots, character_profile="")
                 profile_msgs = generator.build_character_profile_messages(
                     profile_slots, outline, ct)
@@ -920,9 +873,10 @@ class App(tk.Tk):
                     profile_parts.append(chunk)
                 self._apply_profile("".join(profile_parts))
 
-                # 3. 生成各集（注入档案）
+                # 3. 各集
                 ep_slots = dict(slots, character_profile=self._character_profile)
-                self.after(0, _stop_indeterminate)
+                self.after(0, self._reset_progress)
+                self.after(0, lambda: self._tabview.set(self._TAB_EPISODES))
                 self.after(0, lambda: self._run_episodes_task(
                     client, ep_slots, outline, ct))
             except LLMError as e:
@@ -932,16 +886,12 @@ class App(tk.Tk):
 
     def _run_episodes_task(self, client: LLMClient, slots: dict,
                            outline: str, ct: dict):
-        """逐集生成分镜脚本，超出字数范围时自动重试。"""
         episode_count = int(slots["episode_count"])
         chars_min = int(slots["chars_min"])
         chars_max = int(slots["chars_max"])
         chars_target = (chars_min + chars_max) // 2
-
-        # 使用已解析的角色视觉档案（JSON 解析在生成档案时已完成）
         parsed_profiles = dict(self._parsed_profiles)
-
-        results: list[tuple[int, int, bool]] = []  # (ep_num, char_count, accepted)
+        results: list[tuple[int, int, bool]] = []
 
         def task():
             try:
@@ -963,7 +913,6 @@ class App(tk.Tk):
                         msgs = generator.build_single_episode_messages(
                             ep_slots, outline, attempt, ct)
 
-                        # 缓冲生成（不实时显示），避免重试时输出混乱
                         parts: list[str] = []
                         for chunk in client.chat_stream(msgs):
                             parts.append(chunk)
@@ -971,7 +920,6 @@ class App(tk.Tk):
                         text = "".join(parts)
                         count = len(text.strip())
 
-                        # 保留最接近目标的结果
                         if not best_text or (
                                 abs(count - chars_target) < abs(best_count - chars_target)):
                             best_text = text
@@ -981,25 +929,24 @@ class App(tk.Tk):
                             accepted = True
                             break
 
-                    # 代码层面提取并注入视觉档案（逐字原文，保证跨集一致）
+                    # 注入视觉档案
                     relevant = templates.extract_episode_profiles(
                         parsed_profiles, best_text)
                     best_text = templates.inject_visual_profiles(
                         best_text, relevant)
 
-                    # 输出到文本框
                     warning = (
                         f"\n[字数: {best_count}字，目标: {chars_min}~{chars_max}字]"
                         if not accepted else ""
                     )
                     self._append_text(
-                        self._episode_box, best_text + warning + "\n\n" + "─" * 30 + "\n\n")
+                        self._episode_box,
+                        best_text + warning + "\n\n" + "─" * 30 + "\n\n")
 
                     results.append((ep_num, best_count, accepted))
 
-                    # 更新进度条
-                    pct = round(ep_num / episode_count * 100)
-                    self.after(0, lambda p=pct: self._progress.configure(value=p))
+                    pct = ep_num / episode_count
+                    self.after(0, lambda p=pct: self._progress.set(p))
 
                 self.after(0, lambda: self._on_episodes_done(
                     results, chars_target, chars_min, chars_max))
@@ -1023,7 +970,8 @@ class App(tk.Tk):
         bad = sum(1 for _, c, ok in results if not ok)
         warning = f" | {bad}集超出范围" if bad else ""
         self._stats_label.configure(
-            text=f"共{len(results)}集 | 平均{round(avg)}字/集 ≈ {round(avg / templates.CHARS_PER_SEC)}秒"
+            text=f"共{len(results)}集 | 平均{round(avg)}字/集"
+                 f" ≈ {round(avg / templates.CHARS_PER_SEC)}秒"
                  f" | 范围: {lo}~{hi}字{warning}")
 
     # ==================================================================
@@ -1034,16 +982,14 @@ class App(tk.Tk):
         def on_save(result: dict):
             self._custom_templates = result
             config.save_custom_templates(result)
-
-        dlg = TemplateEditorDialog(self, self._custom_templates, on_save)
-        dlg.focus()
+        TemplateEditorDialog(self, self._custom_templates, on_save)
 
     # ==================================================================
     # 导出
     # ==================================================================
 
     def _copy_episodes(self):
-        content = self._episode_box.get("1.0", tk.END).strip()
+        content = self._episode_box.get("0.0", "end").strip()
         if not content:
             messagebox.showinfo("提示", "内容为空，请先生成。", parent=self)
             return
@@ -1052,7 +998,7 @@ class App(tk.Tk):
         messagebox.showinfo("复制成功", "已复制到剪贴板。", parent=self)
 
     def _export_txt(self):
-        content = self._episode_box.get("1.0", tk.END).strip()
+        content = self._episode_box.get("0.0", "end").strip()
         if not content:
             messagebox.showinfo("提示", "内容为空，请先生成。", parent=self)
             return

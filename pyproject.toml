@@ -1,0 +1,12 @@
+[project]
+name = "text2xyq"
+version = "1.0.0"
+description = "小云雀剧本生成器 — AI 短视频分镜脚本批量生成工具"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28.0",
+    "customtkinter>=5.2.0",
+]
+
+[project.scripts]
+text2xyq = "main:main"

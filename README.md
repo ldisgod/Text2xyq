@@ -8,7 +8,14 @@
 
 ## 从源码运行
 
-需要 Python 3.10+：
+需要 Python 3.10+，使用 [uv](https://docs.astral.sh/uv/) 管理依赖：
+
+```bash
+uv sync
+uv run main.py
+```
+
+也可以用 pip：
 
 ```bash
 pip install -r requirements.txt
