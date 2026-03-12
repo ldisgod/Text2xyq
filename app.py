@@ -3,8 +3,10 @@ Text2xyq · 小云雀剧本生成器 — 主界面（CustomTkinter）
 """
 from __future__ import annotations
 
+import logging
 import sys
 import threading
+from datetime import datetime
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
@@ -122,6 +124,7 @@ class App(ctk.CTk):
     _TAB_OUTLINE = "故事大纲"
     _TAB_PROFILE = "角色视觉档案"
     _TAB_EPISODES = "分镜脚本"
+    _TAB_LOG = "日志"
 
     def __init__(self):
         if sys.platform == "win32":
@@ -141,6 +144,7 @@ class App(ctk.CTk):
         self._custom_templates = config.load_custom_templates()
         self._outline_text: str = ""
         self._character_profile: str = ""
+        self._narrator_voice: str = ""
         self._parsed_profiles: dict[str, str] = {}
 
         self._config_frame = self._build_config_page()
@@ -570,6 +574,7 @@ class App(ctk.CTk):
         tabview.add(self._TAB_OUTLINE)
         tabview.add(self._TAB_PROFILE)
         tabview.add(self._TAB_EPISODES)
+        tabview.add(self._TAB_LOG)
 
         # 大纲
         tab_outline = tabview.tab(self._TAB_OUTLINE)
@@ -615,6 +620,22 @@ class App(ctk.CTk):
         ctk.CTkButton(bar, text="导出 TXT", width=90, height=30,
                         command=self._export_txt).pack(side="left", padx=4)
 
+        # 日志
+        tab_log = tabview.tab(self._TAB_LOG)
+        tab_log.grid_rowconfigure(0, weight=1)
+        tab_log.grid_columnconfigure(0, weight=1)
+        self._log_box = ctk.CTkTextbox(
+            tab_log, font=("Consolas", 12), wrap="word",
+            state="disabled")
+        self._log_box.grid(row=0, column=0, sticky="nsew")
+        ctk.CTkButton(
+            tab_log, text="清空日志", width=90, height=30,
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"),
+            command=self._clear_log,
+        ).grid(row=1, column=0, sticky="w", padx=4, pady=(4, 0))
+
+        self._log_error_count = 0
         self._tabview = tabview
 
     # ==================================================================
@@ -637,6 +658,7 @@ class App(ctk.CTk):
             "narration_style": self._narration_var.get(),
             "pacing": self._pacing_var.get(),
             "character_profile": self._character_profile,
+            "narrator_voice": self._narrator_voice,
         }
 
     def _save_gen_params(self) -> dict:
@@ -683,6 +705,35 @@ class App(ctk.CTk):
         self._reset_progress()
         self._set_generating(False)
 
+    # ==================================================================
+    # 日志面板
+    # ==================================================================
+
+    def _log(self, msg: str, level: str = "INFO"):
+        """向日志面板追加一条带时间戳的日志。level: INFO / WARN / ERROR"""
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] [{level}] {msg}\n"
+
+        def _do():
+            self._log_box.configure(state="normal")
+            self._log_box.insert("end", line)
+            self._log_box.see("end")
+            self._log_box.configure(state="disabled")
+            if level == "ERROR":
+                self._log_error_count += 1
+                self._tabview.set(self._TAB_LOG)
+        self.after(0, _do)
+
+    def _clear_log(self):
+        self._log_box.configure(state="normal")
+        self._log_box.delete("0.0", "end")
+        self._log_box.configure(state="disabled")
+        self._log_error_count = 0
+
+    # ==================================================================
+    # 文本操作
+    # ==================================================================
+
     def _set_text(self, widget: ctk.CTkTextbox, text: str):
         widget.configure(state="normal")
         widget.delete("0.0", "end")
@@ -709,6 +760,7 @@ class App(ctk.CTk):
         self._set_text(self._episode_box, "")
         self._outline_text = ""
         self._character_profile = ""
+        self._narrator_voice = ""
         self._parsed_profiles = {}
         self._stats_label.configure(text="")
         self._status_var.set("正在生成故事大纲…")
@@ -721,6 +773,7 @@ class App(ctk.CTk):
         ct = self._custom_templates
 
         def task():
+            self._log("开始生成故事大纲")
             try:
                 msgs = generator.build_outline_messages(slots, ct)
                 parts: list[str] = []
@@ -728,10 +781,10 @@ class App(ctk.CTk):
                     parts.append(chunk)
                     self._append_text(self._outline_box, chunk)
                 self._outline_text = "".join(parts)
+                self._log(f"大纲生成完成，共 {len(self._outline_text)} 字")
                 self.after(0, lambda: self._status_var.set("大纲生成完成"))
             except LLMError as e:
-                self.after(0, lambda: messagebox.showerror(
-                    "生成失败", str(e), parent=self))
+                self._log(f"大纲生成失败: {e}", "ERROR")
                 self.after(0, lambda: self._status_var.set("生成失败"))
             finally:
                 self.after(0, self._finish_generation)
@@ -745,6 +798,7 @@ class App(ctk.CTk):
         self._set_generating(True)
         self._set_text(self._profile_box, "")
         self._character_profile = ""
+        self._narrator_voice = ""
         self._parsed_profiles = {}
         self._status_var.set("正在生成角色视觉档案…")
         self._progress.configure(mode="indeterminate")
@@ -757,6 +811,7 @@ class App(ctk.CTk):
         ct = self._custom_templates
 
         def task():
+            self._log("开始生成角色视觉档案")
             try:
                 msgs = generator.build_character_profile_messages(slots, outline, ct)
                 parts: list[str] = []
@@ -764,10 +819,11 @@ class App(ctk.CTk):
                     parts.append(chunk)
                 raw = "".join(parts)
                 self._apply_profile(raw)
+                n = len(self._parsed_profiles)
+                self._log(f"角色档案生成完成，共 {n} 个角色")
                 self.after(0, lambda: self._status_var.set("角色视觉档案生成完成"))
             except LLMError as e:
-                self.after(0, lambda: messagebox.showerror(
-                    "生成失败", str(e), parent=self))
+                self._log(f"角色档案生成失败: {e}", "ERROR")
                 self.after(0, lambda: self._status_var.set("生成失败"))
             finally:
                 self.after(0, self._finish_generation)
@@ -775,11 +831,15 @@ class App(ctk.CTk):
         threading.Thread(target=task, daemon=True).start()
 
     def _apply_profile(self, raw: str):
-        parsed = templates.parse_character_profiles(raw)
+        parsed, narrator = templates.parse_character_profiles(raw)
+        self._narrator_voice = narrator
         if parsed:
-            display = "\n\n".join(parsed.values())
+            display_parts = list(parsed.values())
+            if narrator:
+                display_parts.append(narrator)
+            display = "\n\n".join(display_parts)
             self._parsed_profiles = parsed
-            self._character_profile = display
+            self._character_profile = "\n\n".join(parsed.values())
         else:
             self._parsed_profiles = {}
             self._character_profile = raw
@@ -808,6 +868,7 @@ class App(ctk.CTk):
         self._set_text(self._episode_box, "")
         self._outline_text = ""
         self._character_profile = ""
+        self._narrator_voice = ""
         self._parsed_profiles = {}
         self._stats_label.configure(text="")
         self._progress.configure(mode="indeterminate")
@@ -827,6 +888,8 @@ class App(ctk.CTk):
         def task():
             try:
                 # 1. 大纲
+                self._log("开始一键生成全部")
+                self._log("开始生成故事大纲")
                 msgs = generator.build_outline_messages(slots, ct)
                 parts: list[str] = []
                 for chunk in client.chat_stream(msgs):
@@ -834,8 +897,10 @@ class App(ctk.CTk):
                     self._append_text(self._outline_box, chunk)
                 self._outline_text = "".join(parts)
                 outline = self._outline_text
+                self._log(f"大纲生成完成，共 {len(outline)} 字")
 
                 # 2. 角色视觉档案
+                self._log("开始生成角色视觉档案")
                 self.after(0, lambda: self._status_var.set("正在生成角色视觉档案…"))
                 self.after(0, lambda: self._tabview.set(self._TAB_PROFILE))
                 profile_slots = dict(slots, character_profile="")
@@ -845,6 +910,8 @@ class App(ctk.CTk):
                 for chunk in client.chat_stream(profile_msgs):
                     profile_parts.append(chunk)
                 self._apply_profile("".join(profile_parts))
+                n = len(self._parsed_profiles)
+                self._log(f"角色档案生成完成，共 {n} 个角色")
 
                 # 3. 各集
                 ep_slots = dict(slots, character_profile=self._character_profile)
@@ -853,6 +920,7 @@ class App(ctk.CTk):
                 self.after(0, lambda: self._run_episodes_task(
                     client, ep_slots, outline, ct))
             except LLMError as e:
+                self._log(f"一键生成失败: {e}", "ERROR")
                 self.after(0, lambda: _fail(e))
 
         threading.Thread(target=task, daemon=True).start()
@@ -867,10 +935,12 @@ class App(ctk.CTk):
 
         def task():
             try:
+                self._log(f"开始生成分镜脚本，共 {episode_count} 集")
                 for ep_num in range(1, episode_count + 1):
                     ep_slots = dict(slots, current_episode=ep_num)
 
                     # ---- Phase A: 剧情框架 ----
+                    self._log(f"第 {ep_num}/{episode_count} 集 · 生成剧情框架")
                     self.after(0, lambda n=ep_num:
                                self._status_var.set(
                                    f"第 {n}/{episode_count} 集 · 剧情框架"))
@@ -931,6 +1001,8 @@ class App(ctk.CTk):
                         shots.append(shot_text)
                         total_duration += dur
 
+                        self._log(f"第 {ep_num} 集 · 分镜 {shot_num} 完成"
+                                  f"（{dur}s，累计 {total_duration}s）")
                         self._append_text(
                             self._episode_box, f"\n{shot_text}")
 
@@ -949,14 +1021,17 @@ class App(ctk.CTk):
                     ep_text = templates.assemble_episode(narrative, shots)
                     char_count = len(ep_text.strip())
                     results.append((ep_num, char_count, total_duration))
+                    self._log(f"第 {ep_num} 集完成："
+                              f"{len(shots)} 个分镜，{total_duration}s，"
+                              f"{char_count} 字")
 
                     pct = ep_num / episode_count
                     self.after(0, lambda p=pct: self._progress.set(p))
 
+                self._log(f"全部 {episode_count} 集生成完成")
                 self.after(0, lambda: self._on_episodes_done(results))
             except LLMError as e:
-                self.after(0, lambda: messagebox.showerror(
-                    "生成失败", str(e), parent=self))
+                self._log(f"分镜脚本生成失败: {e}", "ERROR")
                 self.after(0, lambda: self._status_var.set("生成失败"))
             finally:
                 self.after(0, lambda: self._set_generating(False))

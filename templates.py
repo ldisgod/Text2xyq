@@ -128,9 +128,17 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         '    "常见姿势与动作": "该角色标志性的肢体语言",\n'
         '    "情绪表现": "高兴/紧张/愤怒时的具体表情与肢体变化",\n'
         '    "固定道具与配件": "随身携带或经常出现的物品"\n'
+        '  },\n'
+        '  ...\n'
+        '  {\n'
+        '    "name": "旁白",\n'
+        '    "性别": "旁白声音的性别",\n'
+        '    "声音特征": "音色（浑厚/温柔/清冷等）、语速、声线质感",\n'
+        '    "叙述风格": "措辞偏好、语气特征、情感基调"\n'
         '  }\n'
         ']\n'
         "\n"
+        "最后一个对象必须是旁白声音设定，确保全剧所有集使用统一的旁白声音。\n"
         "请用精简的短语描述，便于在每集分镜中直接引用。只输出 JSON 数组。"
     ),
 
@@ -217,6 +225,7 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "- 叙事方式：${narration_style}\n"
         "${protagonist_constraint_section}\n"
         "${character_profile_section}\n"
+        "${narrator_voice_section}\n"
         "\n"
         "## 输出格式\n"
         "只输出一个分镜，严格按以下格式，不要输出任何其他内容：\n"
@@ -286,6 +295,7 @@ SLOT_REFERENCE: dict[str, list[tuple[str, str]]] = {
         ("${narration_style}", "旁白风格"),
         ("${protagonist_constraint_section}", "宠物约束段落"),
         ("${character_profile_section}", "角色档案（自动注入）"),
+        ("${narrator_voice_section}", "旁白声音档案（自动注入）"),
     ],
     "shot_user": [
         ("${current_episode}", "当前集号"),
@@ -335,6 +345,13 @@ def build_context(raw_slots: dict) -> dict:
         if profile else ""
     )
 
+    # 旁白声音档案（全剧统一）
+    narrator = ctx.get("narrator_voice", "").strip()
+    ctx["narrator_voice_section"] = (
+        f"## 旁白声音（全剧统一，严格保持一致）\n{narrator}"
+        if narrator else ""
+    )
+
     # 逐镜生成所需的默认值
     ctx.setdefault("current_episode", 1)
     ctx.setdefault("episode_scene", "")
@@ -376,19 +393,25 @@ def get_template_names() -> list[str]:
 # 角色视觉档案：解析、提取、注入
 # ---------------------------------------------------------------------------
 
-def parse_character_profiles(profile_text: str) -> dict[str, str]:
-    """将视觉档案解析为 {角色名: 格式化文本块} 字典。
+def parse_character_profiles(
+    profile_text: str,
+) -> tuple[dict[str, str], str]:
+    """将视觉档案解析为 ({角色名: 格式化文本块}, 旁白声音文本) 元组。
 
     优先尝试 JSON 解析（LLM 被要求返回 JSON 数组）；
     若 JSON 失败则降级为正则文本解析。
+    旁白条目（name=="旁白"）会被单独提取。
     """
     if not profile_text or not profile_text.strip():
-        return {}
+        return {}, ""
 
     result = _parse_json_profiles(profile_text)
-    if result:
-        return result
-    return _parse_text_profiles(profile_text)
+    if not result:
+        result = _parse_text_profiles(profile_text)
+
+    # 提取旁白条目
+    narrator = result.pop("旁白", "")
+    return result, narrator
 
 
 def _parse_json_profiles(raw: str) -> dict[str, str]:
