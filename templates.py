@@ -217,6 +217,10 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "- 每个镜头时长严格控制在 5~8 秒\n"
         "- 每个镜头必须包含对白台词或旁白台词，旁白字段不可为「无」或留空\n"
         "- 每个镜头必须包含音效，音效字段不可为「无」或留空，音效音量应明显低于旁白/台词\n"
+        "- 每个分镜总长度控制在 300 字以内\n"
+        "- 禁止使用精确色值（#FFD700）、精确尺寸（2.3cm）、分贝值（-17dB）、"
+        "频率值（15Hz）等技术参数，一律用自然语言描述\n"
+        "- 角色外貌已有视觉档案，画面中仅描述动作、表情和构图，不重复外貌\n"
         "\n"
         "## 风格要求\n"
         "- 画面风格：${visual_style}\n"
@@ -229,8 +233,8 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "\n"
         "## 输出格式\n"
         "只输出一个分镜，严格按以下格式，不要输出任何其他内容：\n"
-        "序号（Xs）画面：[动作与构图] | 旁白：[必填，对白或旁白台词] "
-        "| 音效：[必填，环境音/动作音，音量低于旁白] | 光线：[光线描述]"
+        "序号（Xs）画面：[50字内，动作与构图] | 旁白：[80字内，对白或旁白台词] "
+        "| 音效：[15字内，环境音/动作音] | 光线：[10字内]"
     ),
 
     "shot_user": (
@@ -482,6 +486,36 @@ def extract_episode_profiles(
     if not parsed_profiles:
         return ""
     return "\n\n".join(parsed_profiles.values())
+
+
+def _extract_profile_field(text: str, field: str) -> str:
+    """从格式化档案文本中提取指定字段值。"""
+    m = re.search(rf'- {re.escape(field)}[：:]\s*(.+)', text)
+    return m.group(1).strip() if m else ""
+
+
+def build_compact_profiles(parsed_profiles: dict[str, str]) -> str:
+    """从完整档案构建精简版角色描述（用于小云雀粘贴，节省字符）。
+
+    每个角色一行，仅保留视频生成所需的关键视觉标识。
+    """
+    if not parsed_profiles:
+        return ""
+    lines: list[str] = []
+    for name, text in parsed_profiles.items():
+        gender = _extract_profile_field(text, "性别")
+        gender_mark = {"男": "♂", "女": "♀"}.get(gender, "")
+
+        parts: list[str] = []
+        for key in ("种类", "体型", "外貌", "标志性特征", "固定道具与配件"):
+            val = _extract_profile_field(text, key)
+            if val:
+                parts.append(val)
+
+        desc = "，".join(parts)
+        prefix = f"{name}（{gender_mark}）" if gender_mark else name
+        lines.append(f"{prefix}：{desc}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

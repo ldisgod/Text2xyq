@@ -146,6 +146,7 @@ class App(ctk.CTk):
         self._character_profile: str = ""
         self._narrator_voice: str = ""
         self._parsed_profiles: dict[str, str] = {}
+        self._episode_texts: list[str] = []
 
         self._config_frame = self._build_config_page()
         self._main_frame: ctk.CTkFrame | None = None
@@ -593,11 +594,17 @@ class App(ctk.CTk):
             tab_profile, font=("TkDefaultFont", 13), wrap="word",
             state="disabled")
         self._profile_box.grid(row=0, column=0, sticky="nsew")
-        profile_hint = ctk.CTkLabel(
-            tab_profile,
-            text="档案会按角色自动提取并注入到每集脚本，确保视觉描述逐字一致",
-            font=ctk.CTkFont(size=11), text_color="gray")
-        profile_hint.grid(row=1, column=0, sticky="w", padx=4, pady=(4, 0))
+        profile_bar = ctk.CTkFrame(tab_profile, fg_color="transparent")
+        profile_bar.grid(row=1, column=0, sticky="w", padx=4, pady=(4, 0))
+        ctk.CTkButton(
+            profile_bar, text="复制档案", width=90, height=30,
+            command=self._copy_profile,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            profile_bar,
+            text="完整档案供参考，每集脚本中自动附带精简版",
+            font=ctk.CTkFont(size=11), text_color="gray",
+        ).pack(side="left")
 
         # 分镜脚本
         tab_ep = tabview.tab(self._TAB_EPISODES)
@@ -614,10 +621,26 @@ class App(ctk.CTk):
         self._stats_label.grid(row=1, column=0, sticky="w", padx=4, pady=(4, 0))
 
         bar = ctk.CTkFrame(tab_ep, fg_color="transparent")
-        bar.grid(row=2, column=0, sticky="w", pady=(4, 0))
-        ctk.CTkButton(bar, text="复制全部", width=90, height=30,
+        bar.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+
+        # 逐集复制
+        ctk.CTkLabel(bar, text="复制第", font=ctk.CTkFont(size=12)).pack(
+            side="left", padx=(4, 0))
+        self._copy_ep_var = ctk.StringVar(value="1")
+        ctk.CTkEntry(
+            bar, textvariable=self._copy_ep_var, width=40, height=30,
+        ).pack(side="left", padx=2)
+        ctk.CTkLabel(bar, text="集", font=ctk.CTkFont(size=12)).pack(
+            side="left", padx=(0, 4))
+        ctk.CTkButton(bar, text="复制该集", width=80, height=30,
+                        command=self._copy_single_episode).pack(
+            side="left", padx=4)
+
+        ctk.CTkFrame(bar, width=1, height=20, fg_color="gray40").pack(
+            side="left", padx=8)
+        ctk.CTkButton(bar, text="复制全部", width=80, height=30,
                         command=self._copy_episodes).pack(side="left", padx=4)
-        ctk.CTkButton(bar, text="导出 TXT", width=90, height=30,
+        ctk.CTkButton(bar, text="导出 TXT", width=80, height=30,
                         command=self._export_txt).pack(side="left", padx=4)
 
         # 日志
@@ -762,6 +785,7 @@ class App(ctk.CTk):
         self._character_profile = ""
         self._narrator_voice = ""
         self._parsed_profiles = {}
+        self._episode_texts = []
         self._stats_label.configure(text="")
         self._status_var.set("正在生成故事大纲…")
         self._progress.configure(mode="indeterminate")
@@ -852,6 +876,7 @@ class App(ctk.CTk):
             return
         self._set_generating(True)
         self._set_text(self._episode_box, "")
+        self._episode_texts = []
         self._stats_label.configure(text="")
         slots = self._save_gen_params()
         self._tabview.set(self._TAB_EPISODES)
@@ -870,6 +895,7 @@ class App(ctk.CTk):
         self._character_profile = ""
         self._narrator_voice = ""
         self._parsed_profiles = {}
+        self._episode_texts = []
         self._stats_label.configure(text="")
         self._progress.configure(mode="indeterminate")
         self._progress.start()
@@ -929,8 +955,8 @@ class App(ctk.CTk):
                            outline: str, ct: dict):
         episode_count = int(slots["episode_count"])
         parsed_profiles = dict(self._parsed_profiles)
-        profiles_text = templates.extract_episode_profiles(
-            parsed_profiles, "")
+        compact_profiles = templates.build_compact_profiles(parsed_profiles)
+        self._episode_texts = []
         results: list[tuple[int, int, int]] = []  # (ep, chars, duration)
 
         def task():
@@ -959,13 +985,13 @@ class App(ctk.CTk):
                     if not narrative.get('header'):
                         narrative['header'] = f"第{ep_num}集"
 
-                    # 先显示框架 + 视觉档案 + 分镜标题
+                    # 先显示框架 + 精简视觉档案 + 分镜标题
                     prefix = narrative.get('header', '')
                     scene = narrative.get('scene', '')
                     if scene:
                         prefix += f"\n\n【场景】{scene}"
-                    if profiles_text:
-                        prefix += f"\n\n【视觉档案】\n{profiles_text}"
+                    if compact_profiles:
+                        prefix += f"\n\n【视觉档案】\n{compact_profiles}"
                     prefix += "\n\n【分镜】"
                     self._append_text(self._episode_box, prefix)
 
@@ -1017,13 +1043,20 @@ class App(ctk.CTk):
                     tail += f"\n\n{'─' * 30}\n\n"
                     self._append_text(self._episode_box, tail)
 
-                    # 统计
-                    ep_text = templates.assemble_episode(narrative, shots)
-                    char_count = len(ep_text.strip())
+                    # 组装该集完整文本（与 UI 显示一致，用于逐集复制）
+                    ep_full = prefix
+                    for shot in shots:
+                        ep_full += f"\n{shot.strip()}"
+                    if cliffhanger:
+                        ep_full += f"\n\n【集末悬念】{cliffhanger}"
+                    self._episode_texts.append(ep_full)
+
+                    char_count = len(ep_full.strip())
                     results.append((ep_num, char_count, total_duration))
+                    over = " ⚠超5000" if char_count > 5000 else ""
                     self._log(f"第 {ep_num} 集完成："
                               f"{len(shots)} 个分镜，{total_duration}s，"
-                              f"{char_count} 字")
+                              f"{char_count} 字{over}")
 
                     pct = ep_num / episode_count
                     self.after(0, lambda p=pct: self._progress.set(p))
@@ -1046,10 +1079,15 @@ class App(ctk.CTk):
         durations = [d for _, _, d in results]
         avg_c = sum(counts) / len(counts)
         avg_d = sum(durations) / len(durations)
-        self._stats_label.configure(
-            text=f"共{len(results)}集 | 平均{round(avg_c)}字/集"
+        over_limit = sum(1 for c in counts if c > 5000)
+        stats = (f"共{len(results)}集 | 平均{round(avg_c)}字/集"
                  f" | 平均{round(avg_d)}s/集"
                  f" | 字数: {min(counts)}~{max(counts)}")
+        if over_limit:
+            stats += f" | ⚠ {over_limit}集超5000字符"
+        self._stats_label.configure(
+            text=stats,
+            text_color=self._C_RED if over_limit else "gray")
 
     # ==================================================================
     # 模板编辑器
@@ -1065,6 +1103,41 @@ class App(ctk.CTk):
     # 导出
     # ==================================================================
 
+    def _copy_profile(self):
+        content = self._profile_box.get("0.0", "end").strip()
+        if not content:
+            messagebox.showinfo("提示", "视觉档案为空，请先生成。", parent=self)
+            return
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        messagebox.showinfo("复制成功", "完整视觉档案已复制到剪贴板。", parent=self)
+
+    def _copy_single_episode(self):
+        if not self._episode_texts:
+            messagebox.showinfo("提示", "内容为空，请先生成。", parent=self)
+            return
+        try:
+            ep_num = int(self._copy_ep_var.get())
+        except (ValueError, TypeError):
+            messagebox.showwarning("提示", "请输入有效的集号。", parent=self)
+            return
+        if ep_num < 1 or ep_num > len(self._episode_texts):
+            messagebox.showwarning(
+                "提示", f"集号范围：1~{len(self._episode_texts)}",
+                parent=self)
+            return
+        text = self._episode_texts[ep_num - 1]
+        char_count = len(text.strip())
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        warning = ""
+        if char_count > 5000:
+            warning = f"\n\n⚠ 该集 {char_count} 字符，超出小云雀 5000 字符限制！"
+        messagebox.showinfo(
+            "复制成功",
+            f"第 {ep_num} 集已复制（{char_count} 字符）。{warning}",
+            parent=self)
+
     def _copy_episodes(self):
         content = self._episode_box.get("0.0", "end").strip()
         if not content:
@@ -1075,8 +1148,7 @@ class App(ctk.CTk):
         messagebox.showinfo("复制成功", "已复制到剪贴板。", parent=self)
 
     def _export_txt(self):
-        content = self._episode_box.get("0.0", "end").strip()
-        if not content:
+        if not self._episode_texts:
             messagebox.showinfo("提示", "内容为空，请先生成。", parent=self)
             return
         path = filedialog.asksaveasfilename(
@@ -1090,7 +1162,25 @@ class App(ctk.CTk):
             return
         try:
             with open(path, "w", encoding="utf-8") as fh:
-                fh.write(content)
+                # 完整视觉档案（供参考）
+                if self._character_profile:
+                    fh.write("=" * 40 + "\n")
+                    fh.write("【完整视觉档案】（供参考留档）\n")
+                    fh.write("=" * 40 + "\n\n")
+                    fh.write(self._character_profile + "\n")
+                    if self._narrator_voice:
+                        fh.write("\n" + self._narrator_voice + "\n")
+                    fh.write("\n")
+
+                # 每集脚本
+                fh.write("=" * 40 + "\n")
+                fh.write("【分镜脚本】（逐集粘贴到小云雀）\n")
+                fh.write("=" * 40 + "\n\n")
+                for i, ep_text in enumerate(self._episode_texts):
+                    cc = len(ep_text.strip())
+                    over = " ⚠超限" if cc > 5000 else ""
+                    fh.write(f"--- 第 {i + 1} 集（{cc} 字符{over}）---\n\n")
+                    fh.write(ep_text.strip() + "\n\n")
             messagebox.showinfo("导出成功", f"已保存到：\n{path}", parent=self)
         except OSError as e:
             messagebox.showerror("导出失败", str(e), parent=self)
