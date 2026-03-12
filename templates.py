@@ -205,8 +205,9 @@ DEFAULT_TEMPLATES: dict[str, str] = {
     "shot_system": (
         "你是专业短视频分镜编剧，为「小云雀」AI视频软件逐镜创作分镜。\n"
         "\n"
-        "## 时长约束\n"
-        "每个镜头时长严格控制在 5~8 秒。\n"
+        "## 核心约束\n"
+        "- 每个镜头时长严格控制在 5~8 秒\n"
+        "- 每个镜头必须包含对白台词或旁白台词，旁白字段不可为「无」或留空\n"
         "\n"
         "## 风格要求\n"
         "- 画面风格：${visual_style}\n"
@@ -218,7 +219,7 @@ DEFAULT_TEMPLATES: dict[str, str] = {
         "\n"
         "## 输出格式\n"
         "只输出一个分镜，严格按以下格式，不要输出任何其他内容：\n"
-        "序号（Xs）画面：[动作与构图] | 旁白：[旁白文字或「无」] "
+        "序号（Xs）画面：[动作与构图] | 旁白：[必填，对白或旁白台词] "
         "| 音效：[环境音或「无」] | 光线：[光线描述]"
     ),
 
@@ -306,18 +307,11 @@ def build_context(raw_slots: dict) -> dict:
     """从原始槽位值构建完整渲染上下文（计算派生值、生成条件段落）。"""
     ctx = dict(raw_slots)
 
-    # 数值计算：使用用户配置的字数区间
-    chars_min = int(ctx.get("chars_min", 270))
-    chars_max = int(ctx.get("chars_max", 330))
-    ctx["chars_min"] = chars_min
-    ctx["chars_max"] = chars_max
-
-    chars_mid = (chars_min + chars_max) // 2
-    ctx["chars_per_episode"] = chars_mid
+    # 时长计算
     episodes = int(ctx.get("episode_count", 20))
-    ctx["episode_duration_seconds"] = round(chars_mid / CHARS_PER_SEC)
+    ctx["episode_duration_seconds"] = MIN_EPISODE_SECONDS
 
-    total_secs = round(chars_mid * episodes / CHARS_PER_SEC)
+    total_secs = MIN_EPISODE_SECONDS * episodes
     mins, secs = divmod(total_secs, 60)
     ctx["total_duration_display"] = f"{mins}分{secs}秒" if mins else f"{secs}秒"
 

@@ -499,35 +499,13 @@ class App(ctk.CTk):
         self._episode_var = ctk.StringVar(
             value=str(self._gen_params.get("episode_count", 20)))
         ep_frame = ctk.CTkFrame(f, fg_color="transparent")
-        ep_frame.pack(fill="x", padx=pad, pady=(2, 8))
+        ep_frame.pack(fill="x", padx=pad, pady=(2, 4))
         self._ep_entry = ctk.CTkEntry(
             ep_frame, textvariable=self._episode_var, width=80)
         self._ep_entry.pack(side="left")
         ctk.CTkLabel(ep_frame, text="集", font=ctk.CTkFont(size=12)).pack(
             side="left", padx=4)
         self._ep_entry.bind("<KeyRelease>", lambda _: self._update_duration())
-
-        ctk.CTkLabel(f, text="每集字数范围", font=ctk.CTkFont(size=12),
-                      anchor="w").pack(fill="x", padx=pad)
-        range_frame = ctk.CTkFrame(f, fg_color="transparent")
-        range_frame.pack(fill="x", padx=pad, pady=(2, 4))
-        self._chars_min_var = ctk.StringVar(
-            value=str(self._gen_params.get("chars_min", 270)))
-        ctk.CTkEntry(
-            range_frame, textvariable=self._chars_min_var, width=70,
-        ).pack(side="left")
-        ctk.CTkLabel(range_frame, text=" ~ ").pack(side="left")
-        self._chars_max_var = ctk.StringVar(
-            value=str(self._gen_params.get("chars_max", 330)))
-        ctk.CTkEntry(
-            range_frame, textvariable=self._chars_max_var, width=70,
-        ).pack(side="left")
-        ctk.CTkLabel(range_frame, text=" 字").pack(side="left", padx=4)
-
-        # bind key release for live update
-        for child in range_frame.winfo_children():
-            if isinstance(child, ctk.CTkEntry):
-                child.bind("<KeyRelease>", lambda _: self._update_duration())
 
         self._duration_label = ctk.CTkLabel(
             f, text="", font=ctk.CTkFont(size=11), text_color="gray",
@@ -545,18 +523,15 @@ class App(ctk.CTk):
     def _do_update_duration(self):
         self._duration_debounce_id = None
         try:
-            cmin = int(self._chars_min_var.get())
-            cmax = int(self._chars_max_var.get())
             eps = int(self._episode_var.get())
         except (ValueError, TypeError):
             return
-        mid = (cmin + cmax) // 2
-        per_ep = round(mid / templates.CHARS_PER_SEC)
+        per_ep = templates.MIN_EPISODE_SECONDS
         total = per_ep * eps
         mins, secs = divmod(total, 60)
         total_str = f"{mins}分{secs}秒" if mins else f"{secs}秒"
         self._duration_label.configure(
-            text=f"≈ {per_ep}秒/集 · 总时长 ≈ {total_str}")
+            text=f"≥ {per_ep}秒/集 · 总时长 ≥ {total_str}")
 
     # ---- 风格设置 ----
 
@@ -656,8 +631,6 @@ class App(ctk.CTk):
             "character_type": "、".join(selected_chars),
             "plot": self._plot_var.get(),
             "episode_count": int(self._episode_var.get()),
-            "chars_min": int(self._chars_min_var.get()),
-            "chars_max": int(self._chars_max_var.get()),
             "visual_style": self._visual_var.get(),
             "aspect_ratio": self._ratio_var.get(),
             "mood": self._mood_var.get(),
