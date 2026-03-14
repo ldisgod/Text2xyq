@@ -3,11 +3,12 @@ Text2xyq · 小云雀剧本生成器 — 主界面（CustomTkinter）
 """
 from __future__ import annotations
 
-import logging
+import os
 import sys
 import threading
 from datetime import datetime
-from tkinter import filedialog, messagebox
+from pathlib import Path
+from tkinter import messagebox
 
 import customtkinter as ctk
 
@@ -15,11 +16,17 @@ import config
 import generator
 import templates
 from llm_client import LLMClient, LLMError
+from task_model import (
+    Task, TaskPhase, TaskState, TaskStatus,
+    build_task_summary, safe_filename,
+)
 
 
 # 全局主题
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+OUTPUT_DIR = Path.home() / ".text2xyq" / "output"
 
 
 # ---------------------------------------------------------------------------
@@ -55,29 +62,31 @@ class TemplateEditorDialog(ctk.CTkToplevel):
             tab_label = self._TAB_LABELS.get(name, name)
             tabview.add(tab_label)
             tab = tabview.tab(tab_label)
+            tab.grid_rowconfigure(0, weight=1)
+            tab.grid_columnconfigure(0, weight=1)
 
-            content = custom_templates.get(name, templates.get_default_template(name))
-            editor = ctk.CTkTextbox(tab, font=("Consolas", 13), wrap="word")
-            editor.pack(fill="both", expand=True, padx=4, pady=(4, 2))
-            editor.insert("0.0", content)
-            self._editors[name] = editor
+            ed = ctk.CTkTextbox(tab, font=("Consolas", 13), wrap="word")
+            ed.grid(row=0, column=0, sticky="nsew")
+            text = custom_templates.get(name, templates.get_default_template(name))
+            ed.insert("0.0", text)
+            self._editors[name] = ed
 
-            # 变量说明
-            ref_content = "  ".join(
-                f"{var}（{desc}）"
-                for var, desc in templates.SLOT_REFERENCE.get(name, []))
-            ref_label = ctk.CTkLabel(
-                tab, text=f"可用变量：{ref_content}",
-                font=("TkDefaultFont", 11), text_color="gray",
-                wraplength=740, justify="left")
-            ref_label.pack(fill="x", padx=4, pady=(0, 2))
+            # 槽位参考
+            slots = templates.SLOT_REFERENCE.get(name, [])
+            if slots:
+                ref_text = "  ".join(f"{s}({d})" for s, d in slots)
+                ctk.CTkLabel(
+                    tab, text=f"可用槽位：{ref_text}",
+                    font=ctk.CTkFont(size=11), text_color="gray",
+                    wraplength=760, anchor="w",
+                ).grid(row=1, column=0, sticky="w", padx=4, pady=(2, 0))
 
             ctk.CTkButton(
-                tab, text="恢复默认", width=90, height=28,
+                tab, text="恢复默认", width=80, height=28,
                 fg_color="transparent", border_width=1,
                 text_color=("gray10", "gray90"),
                 command=lambda n=name: self._reset(n),
-            ).pack(anchor="w", padx=4, pady=(0, 4))
+            ).grid(row=2, column=0, sticky="w", padx=4, pady=(4, 4))
 
         # 底部
         bottom = ctk.CTkFrame(self, fg_color="transparent")
@@ -110,6 +119,120 @@ class TemplateEditorDialog(ctk.CTkToplevel):
 
 
 # ---------------------------------------------------------------------------
+# 任务卡片
+# ---------------------------------------------------------------------------
+
+class TaskCard(ctk.CTkFrame):
+    """任务列表中的单个卡片 widget。"""
+
+    _C_GREEN = "#10B981"
+    _C_RED = "#EF4444"
+    _C_YELLOW = "#F59E0B"
+    _C_GRAY = "gray50"
+
+    _PHASE_LABELS = {
+        TaskPhase.IDLE: "○",
+        TaskPhase.OUTLINE: "大纲",
+        TaskPhase.PROFILE: "档案",
+        TaskPhase.EPISODES: "分镜",
+    }
+
+    def __init__(self, parent, index: int, task: Task,
+                 on_remove: callable | None = None):
+        super().__init__(parent, corner_radius=8)
+        self._task = task
+        self._on_remove = on_remove
+
+        pad = 8
+
+        # 标题行
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=pad, pady=(pad, 2))
+
+        self._title_label = ctk.CTkLabel(
+            header,
+            text=f"{'①②③④⑤⑥⑦⑧⑨⑩'[index] if index < 10 else str(index + 1)} {task.summary}",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w",
+        )
+        self._title_label.pack(side="left", fill="x", expand=True)
+
+        self._remove_btn = ctk.CTkButton(
+            header, text="✕", width=28, height=28,
+            fg_color="transparent", hover_color=("gray80", "gray30"),
+            text_color=("gray40", "gray60"),
+            command=lambda: on_remove(task.task_id) if on_remove else None,
+        )
+        self._remove_btn.pack(side="right")
+
+        # 进度条
+        self._progress_bar = ctk.CTkProgressBar(self, height=8)
+        self._progress_bar.pack(fill="x", padx=pad, pady=(2, 2))
+        self._progress_bar.set(0)
+
+        # 子任务状态行
+        self._status_label = ctk.CTkLabel(
+            self, text="等待开始…",
+            font=ctk.CTkFont(size=11), text_color="gray",
+            anchor="w",
+        )
+        self._status_label.pack(fill="x", padx=pad, pady=(0, pad))
+
+    def update_display(self):
+        """从 task.state 刷新显示。"""
+        t = self._task
+        s = t.state
+        progress = t.progress
+
+        self._progress_bar.set(progress)
+
+        if s.status == TaskStatus.PENDING:
+            self._status_label.configure(text="等待开始…", text_color="gray")
+        elif s.status == TaskStatus.RUNNING:
+            self._build_running_status(s)
+        elif s.status == TaskStatus.COMPLETED:
+            title_part = f"  《{s.drama_title}》" if s.drama_title else ""
+            self._status_label.configure(
+                text=f"✓大纲  ✓档案  ✓分镜{title_part}",
+                text_color=self._C_GREEN,
+            )
+        elif s.status == TaskStatus.FAILED:
+            err = s.error[:60] if s.error else "未知错误"
+            self._status_label.configure(
+                text=f"失败：{err}", text_color=self._C_RED)
+
+    def _build_running_status(self, s: TaskState):
+        parts = []
+        # 大纲
+        if s.phase == TaskPhase.OUTLINE:
+            parts.append("▶大纲")
+            parts.append("○档案")
+            parts.append("○分镜")
+        elif s.phase == TaskPhase.PROFILE:
+            parts.append("✓大纲")
+            parts.append("▶档案")
+            parts.append("○分镜")
+        elif s.phase == TaskPhase.EPISODES:
+            parts.append("✓大纲")
+            parts.append("✓档案")
+            total = s.total_episodes or "?"
+            done = len(s.episode_texts)
+            parts.append(f"▶分镜 {done}/{total}集")
+        else:
+            parts.append("准备中…")
+
+        self._status_label.configure(
+            text="  ".join(parts), text_color=self._C_YELLOW)
+
+    def set_removable(self, removable: bool):
+        """生成开始后隐藏删除按钮。"""
+        if removable:
+            self._remove_btn.pack(side="right")
+        else:
+            self._remove_btn.pack_forget()
+
+
+# ---------------------------------------------------------------------------
 # 主应用
 # ---------------------------------------------------------------------------
 
@@ -119,12 +242,6 @@ class App(ctk.CTk):
     _C_GREEN = "#10B981"
     _C_GREEN_HOVER = "#059669"
     _C_RED = "#EF4444"
-
-    # Tab 名称常量
-    _TAB_OUTLINE = "故事大纲"
-    _TAB_PROFILE = "角色视觉档案"
-    _TAB_EPISODES = "分镜脚本"
-    _TAB_LOG = "日志"
 
     def __init__(self):
         if sys.platform == "win32":
@@ -142,11 +259,14 @@ class App(ctk.CTk):
         self._llm_cfg = config.load_llm()
         self._gen_params = config.load_generation_params()
         self._custom_templates = config.load_custom_templates()
-        self._outline_text: str = ""
-        self._character_profile: str = ""
-        self._narrator_voice: str = ""
-        self._parsed_profiles: dict[str, str] = {}
-        self._episode_texts: list[str] = []
+
+        # 任务队列
+        self._tasks: list[Task] = []
+        self._task_cards: dict[str, TaskCard] = {}
+        self._generating = False
+        self._poll_id: str | None = None
+        self._done_lock = threading.Lock()
+        self._done_count = 0
 
         self._config_frame = self._build_config_page()
         self._main_frame: ctk.CTkFrame | None = None
@@ -310,10 +430,11 @@ class App(ctk.CTk):
 
         self._build_left_panels(left)
 
-        # 右侧 Tabview
+        # 右侧面板
         right = ctk.CTkFrame(page, fg_color="transparent")
         right.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=8)
-        right.grid_rowconfigure(0, weight=1)
+        right.grid_rowconfigure(0, weight=3)
+        right.grid_rowconfigure(1, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
         self._build_right(right)
@@ -378,40 +499,38 @@ class App(ctk.CTk):
         ctk.CTkFrame(parent, height=1, fg_color="gray40").pack(
             fill="x", padx=pad, pady=8)
 
-        # 生成按钮
-        self._btn_outline = ctk.CTkButton(
-            parent, text="生成故事大纲", height=36,
-            command=self._on_generate_outline)
-        self._btn_outline.pack(fill="x", padx=pad, pady=2)
+        # 添加任务按钮
+        self._btn_add_task = ctk.CTkButton(
+            parent, text="＋ 添加任务", height=36,
+            command=self._on_add_task)
+        self._btn_add_task.pack(fill="x", padx=pad, pady=2)
 
-        self._btn_profile = ctk.CTkButton(
-            parent, text="生成角色视觉档案", height=36,
-            command=self._on_generate_profile, state="disabled")
-        self._btn_profile.pack(fill="x", padx=pad, pady=2)
+        # 队列计数
+        self._queue_count_var = ctk.StringVar(value="任务队列：0 个任务")
+        ctk.CTkLabel(
+            parent, textvariable=self._queue_count_var,
+            font=ctk.CTkFont(size=12), text_color="gray", anchor="w",
+        ).pack(fill="x", padx=pad, pady=(4, 4))
 
-        self._btn_episodes = ctk.CTkButton(
-            parent, text="生成各集提示词", height=36,
-            command=self._on_generate_episodes, state="disabled")
-        self._btn_episodes.pack(fill="x", padx=pad, pady=2)
-
-        self._btn_all = ctk.CTkButton(
-            parent, text="✦ 一键生成全部", height=44,
+        # 开始生成
+        self._btn_start = ctk.CTkButton(
+            parent, text="✦ 开始生成", height=44,
             font=ctk.CTkFont(size=15, weight="bold"),
             fg_color=self._C_GREEN, hover_color=self._C_GREEN_HOVER,
-            command=self._on_generate_all)
-        self._btn_all.pack(fill="x", padx=pad, pady=(8, 4))
+            command=self._on_start_generation,
+            state="disabled",
+        )
+        self._btn_start.pack(fill="x", padx=pad, pady=(4, 2))
 
-        # 进度条
-        self._progress = ctk.CTkProgressBar(parent, height=6)
-        self._progress.pack(fill="x", padx=pad, pady=(8, 2))
-        self._progress.set(0)
-
-        self._status_var = ctk.StringVar(value="就绪")
-        ctk.CTkLabel(
-            parent, textvariable=self._status_var,
-            font=ctk.CTkFont(size=11), text_color="gray",
-            anchor="w",
-        ).pack(fill="x", padx=pad, pady=(0, pad))
+        # 清空队列
+        self._btn_clear = ctk.CTkButton(
+            parent, text="清空队列", height=30,
+            fg_color="transparent", border_width=1,
+            text_color=("gray10", "gray90"),
+            command=self._on_clear_queue,
+            state="disabled",
+        )
+        self._btn_clear.pack(fill="x", padx=pad, pady=(2, pad))
 
     def _build_section_label(self, parent, text: str):
         ctk.CTkLabel(
@@ -569,108 +688,47 @@ class App(ctk.CTk):
     # ==================================================================
 
     def _build_right(self, parent):
-        # 剧名标签
-        self._drama_title_var = ctk.StringVar(value="")
-        self._drama_title_lbl = ctk.CTkLabel(
-            parent, textvariable=self._drama_title_var,
-            font=ctk.CTkFont(size=18, weight="bold"),
-            anchor="w",
+        # 任务列表（上方）
+        self._task_list_frame = ctk.CTkScrollableFrame(
+            parent, corner_radius=8,
+            label_text="任务列表",
+            label_font=ctk.CTkFont(size=13, weight="bold"),
         )
-        # 初始隐藏，有剧名时再显示
-        parent.grid_rowconfigure(0, weight=0)
-        parent.grid_rowconfigure(1, weight=1)
+        self._task_list_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
 
-        tabview = ctk.CTkTabview(parent, corner_radius=8)
-        tabview.grid(row=1, column=0, sticky="nsew")
+        # 空状态提示
+        self._empty_label = ctk.CTkLabel(
+            self._task_list_frame,
+            text="暂无任务，请在左侧配置参数后点击「添加任务」",
+            font=ctk.CTkFont(size=13), text_color="gray",
+        )
+        self._empty_label.pack(pady=40)
 
-        tabview.add(self._TAB_OUTLINE)
-        tabview.add(self._TAB_PROFILE)
-        tabview.add(self._TAB_EPISODES)
-        tabview.add(self._TAB_LOG)
+        # 日志面板（下方）
+        log_frame = ctk.CTkFrame(parent, corner_radius=8)
+        log_frame.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
+        log_frame.grid_rowconfigure(0, weight=0)
+        log_frame.grid_rowconfigure(1, weight=1)
+        log_frame.grid_columnconfigure(0, weight=1)
 
-        # 大纲
-        tab_outline = tabview.tab(self._TAB_OUTLINE)
-        tab_outline.grid_rowconfigure(0, weight=1)
-        tab_outline.grid_columnconfigure(0, weight=1)
-        self._outline_box = ctk.CTkTextbox(
-            tab_outline, font=("TkDefaultFont", 13), wrap="word",
-            state="disabled")
-        self._outline_box.grid(row=0, column=0, sticky="nsew")
-
-        # 角色档案
-        tab_profile = tabview.tab(self._TAB_PROFILE)
-        tab_profile.grid_rowconfigure(0, weight=1)
-        tab_profile.grid_columnconfigure(0, weight=1)
-        self._profile_box = ctk.CTkTextbox(
-            tab_profile, font=("TkDefaultFont", 13), wrap="word",
-            state="disabled")
-        self._profile_box.grid(row=0, column=0, sticky="nsew")
-        profile_bar = ctk.CTkFrame(tab_profile, fg_color="transparent")
-        profile_bar.grid(row=1, column=0, sticky="w", padx=4, pady=(4, 0))
-        ctk.CTkButton(
-            profile_bar, text="复制档案", width=90, height=30,
-            command=self._copy_profile,
-        ).pack(side="left", padx=(0, 8))
+        log_header = ctk.CTkFrame(log_frame, fg_color="transparent")
+        log_header.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))
         ctk.CTkLabel(
-            profile_bar,
-            text="完整档案供参考，每集脚本中自动附带精简版",
-            font=ctk.CTkFont(size=11), text_color="gray",
+            log_header, text="日志",
+            font=ctk.CTkFont(size=13, weight="bold"), anchor="w",
         ).pack(side="left")
-
-        # 分镜脚本
-        tab_ep = tabview.tab(self._TAB_EPISODES)
-        tab_ep.grid_rowconfigure(0, weight=1)
-        tab_ep.grid_columnconfigure(0, weight=1)
-        self._episode_box = ctk.CTkTextbox(
-            tab_ep, font=("TkDefaultFont", 13), wrap="word",
-            state="disabled")
-        self._episode_box.grid(row=0, column=0, sticky="nsew")
-
-        self._stats_label = ctk.CTkLabel(
-            tab_ep, text="", font=ctk.CTkFont(size=11), text_color="gray",
-            anchor="w")
-        self._stats_label.grid(row=1, column=0, sticky="w", padx=4, pady=(4, 0))
-
-        bar = ctk.CTkFrame(tab_ep, fg_color="transparent")
-        bar.grid(row=2, column=0, sticky="ew", pady=(4, 0))
-
-        # 逐集复制
-        ctk.CTkLabel(bar, text="复制第", font=ctk.CTkFont(size=12)).pack(
-            side="left", padx=(4, 0))
-        self._copy_ep_var = ctk.StringVar(value="1")
-        ctk.CTkEntry(
-            bar, textvariable=self._copy_ep_var, width=40, height=30,
-        ).pack(side="left", padx=2)
-        ctk.CTkLabel(bar, text="集", font=ctk.CTkFont(size=12)).pack(
-            side="left", padx=(0, 4))
-        ctk.CTkButton(bar, text="复制该集", width=80, height=30,
-                        command=self._copy_single_episode).pack(
-            side="left", padx=4)
-
-        ctk.CTkFrame(bar, width=1, height=20, fg_color="gray40").pack(
-            side="left", padx=8)
-        ctk.CTkButton(bar, text="复制全部", width=80, height=30,
-                        command=self._copy_episodes).pack(side="left", padx=4)
-        ctk.CTkButton(bar, text="导出 TXT", width=80, height=30,
-                        command=self._export_txt).pack(side="left", padx=4)
-
-        # 日志
-        tab_log = tabview.tab(self._TAB_LOG)
-        tab_log.grid_rowconfigure(0, weight=1)
-        tab_log.grid_columnconfigure(0, weight=1)
-        self._log_box = ctk.CTkTextbox(
-            tab_log, font=("Consolas", 12), wrap="word",
-            state="disabled")
-        self._log_box.grid(row=0, column=0, sticky="nsew")
         ctk.CTkButton(
-            tab_log, text="清空日志", width=90, height=30,
+            log_header, text="清空日志", width=70, height=24,
+            font=ctk.CTkFont(size=11),
             fg_color="transparent", border_width=1,
             text_color=("gray10", "gray90"),
             command=self._clear_log,
-        ).grid(row=1, column=0, sticky="w", padx=4, pady=(4, 0))
+        ).pack(side="right")
 
-        self._log_error_count = 0
-        self._tabview = tabview
+        self._log_box = ctk.CTkTextbox(
+            log_frame, font=("Consolas", 12), wrap="word",
+            state="disabled")
+        self._log_box.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
 
     # ==================================================================
     # 槽位收集 & 保存
@@ -691,13 +749,14 @@ class App(ctk.CTk):
             "mood": self._mood_var.get(),
             "narration_style": self._narration_var.get(),
             "pacing": self._pacing_var.get(),
-            "character_profile": self._character_profile,
-            "narrator_voice": self._narrator_voice,
+            "character_profile": "",
+            "narrator_voice": "",
         }
 
     def _save_gen_params(self) -> dict:
         slots = self._collect_slots()
-        skip = {"protagonist_type", "style", "character_type", "plot"}
+        skip = {"protagonist_type", "style", "character_type", "plot",
+                "character_profile", "narrator_voice"}
         config.save_generation_params(
             {k: v for k, v in slots.items() if k not in skip})
         return slots
@@ -711,40 +770,10 @@ class App(ctk.CTk):
         return LLMClient(cfg["base_url"], cfg["api_key"], cfg["model"])
 
     # ==================================================================
-    # UI 状态
-    # ==================================================================
-
-    def _set_generating(self, active: bool):
-        state = "disabled" if active else "normal"
-        self._btn_outline.configure(state=state)
-        self._btn_all.configure(state=state)
-        has_outline = bool(self._outline_text)
-        self._btn_profile.configure(
-            state="disabled" if active else
-            ("normal" if has_outline else "disabled"))
-        self._btn_episodes.configure(
-            state="disabled" if active else
-            ("normal" if has_outline else "disabled"))
-        if not active:
-            self._progress.set(0)
-
-    def _reset_progress(self):
-        """停止不确定模式进度条并重置。"""
-        self._progress.stop()
-        self._progress.configure(mode="determinate")
-        self._progress.set(0)
-
-    def _finish_generation(self):
-        """生成结束时的统一清理（在主线程调用）。"""
-        self._reset_progress()
-        self._set_generating(False)
-
-    # ==================================================================
-    # 日志面板
+    # 日志
     # ==================================================================
 
     def _log(self, msg: str, level: str = "INFO"):
-        """向日志面板追加一条带时间戳的日志。level: INFO / WARN / ERROR"""
         ts = datetime.now().strftime("%H:%M:%S")
         line = f"[{ts}] [{level}] {msg}\n"
 
@@ -753,370 +782,360 @@ class App(ctk.CTk):
             self._log_box.insert("end", line)
             self._log_box.see("end")
             self._log_box.configure(state="disabled")
-            if level == "ERROR":
-                self._log_error_count += 1
-                self._tabview.set(self._TAB_LOG)
         self.after(0, _do)
 
     def _clear_log(self):
         self._log_box.configure(state="normal")
         self._log_box.delete("0.0", "end")
         self._log_box.configure(state="disabled")
-        self._log_error_count = 0
 
     # ==================================================================
-    # 剧名
+    # 任务管理
     # ==================================================================
 
-    def _update_drama_title(self, outline: str):
-        """从大纲中解析剧名并更新 UI。"""
-        title = templates.parse_drama_title(outline)
-        self._drama_title_var.set(title)
-        if title:
-            self._drama_title_lbl.grid(
-                row=0, column=0, sticky="w", padx=8, pady=(4, 0))
+    def _on_add_task(self):
+        """快照当前参数为一个 Task，加入队列。"""
+        try:
+            int(self._episode_var.get())
+        except (ValueError, TypeError):
+            messagebox.showwarning("提示", "请输入有效的集数", parent=self)
+            return
+
+        slots = self._save_gen_params()
+        summary = build_task_summary(slots)
+        task = Task(
+            slots=slots,
+            custom_templates=dict(self._custom_templates),
+            model=self._llm_cfg.get("model", "qwen-plus"),
+            summary=summary,
+        )
+        self._tasks.append(task)
+        self._log(f"添加任务：{summary}")
+
+        if self._generating:
+            # 生成中 → 立即启动新任务
+            self._launch_task(task)
+        self._refresh_task_list()
+        self._update_queue_count()
+
+    def _on_remove_task(self, task_id: str):
+        """从队列删除任务（生成中禁用）。"""
+        if self._generating:
+            return
+        self._tasks = [t for t in self._tasks if t.task_id != task_id]
+        self._refresh_task_list()
+        self._update_queue_count()
+
+    def _on_clear_queue(self):
+        """清空队列。"""
+        if self._generating:
+            return
+        self._tasks.clear()
+        self._refresh_task_list()
+        self._update_queue_count()
+
+    def _refresh_task_list(self):
+        """重建所有 TaskCard widgets。"""
+        # 清除旧卡片
+        for w in self._task_list_frame.winfo_children():
+            w.destroy()
+        self._task_cards.clear()
+
+        if not self._tasks:
+            self._empty_label = ctk.CTkLabel(
+                self._task_list_frame,
+                text="暂无任务，请在左侧配置参数后点击「添加任务」",
+                font=ctk.CTkFont(size=13), text_color="gray",
+            )
+            self._empty_label.pack(pady=40)
+            return
+
+        for i, task in enumerate(self._tasks):
+            removable = task.state.status == TaskStatus.PENDING
+            card = TaskCard(
+                self._task_list_frame, i, task,
+                on_remove=self._on_remove_task if removable else None,
+            )
+            card.pack(fill="x", padx=4, pady=(4, 4))
+            card.set_removable(removable)
+            card.update_display()
+            self._task_cards[task.task_id] = card
+
+    def _update_queue_count(self):
+        """更新队列计数标签和按钮状态。"""
+        n = len(self._tasks)
+        self._queue_count_var.set(f"任务队列：{n} 个任务")
+
+        # 添加任务始终可用
+        self._btn_add_task.configure(state="normal")
+        if self._generating:
+            self._btn_start.configure(state="disabled")
+            self._btn_clear.configure(state="disabled")
         else:
-            self._drama_title_lbl.grid_forget()
+            pending = any(t.state.status == TaskStatus.PENDING for t in self._tasks)
+            self._btn_start.configure(state="normal" if pending else "disabled")
+            self._btn_clear.configure(state="normal" if n > 0 else "disabled")
 
     # ==================================================================
-    # 文本操作
+    # 生成编排
     # ==================================================================
 
-    def _set_text(self, widget: ctk.CTkTextbox, text: str):
-        widget.configure(state="normal")
-        widget.delete("0.0", "end")
-        if text:
-            widget.insert("end", text)
-        widget.configure(state="disabled")
+    def _launch_task(self, task: Task):
+        """启动单个任务的工作线程。"""
+        task.state = TaskState(
+            status=TaskStatus.RUNNING,
+            total_episodes=int(task.slots.get("episode_count", 20)),
+        )
+        t = threading.Thread(
+            target=self._run_task_pipeline,
+            args=(task,),
+            daemon=True,
+        )
+        t.start()
 
-    def _append_text(self, widget: ctk.CTkTextbox, text: str):
-        def _do():
-            widget.configure(state="normal")
-            widget.insert("end", text)
-            widget.see("end")
-            widget.configure(state="disabled")
-        self.after(0, _do)
+    def _on_start_generation(self):
+        """启动所有 PENDING 任务。"""
+        pending = [t for t in self._tasks
+                   if t.state.status == TaskStatus.PENDING]
+        if not pending or self._generating:
+            return
 
-    # ==================================================================
-    # 生成逻辑
-    # ==================================================================
+        self._generating = True
+        self._done_count = 0
+        self._update_queue_count()
 
-    def _on_generate_outline(self):
-        self._set_generating(True)
-        self._set_text(self._outline_box, "")
-        self._set_text(self._profile_box, "")
-        self._set_text(self._episode_box, "")
-        self._outline_text = ""
-        self._update_drama_title("")
-        self._character_profile = ""
-        self._narrator_voice = ""
-        self._parsed_profiles = {}
-        self._episode_texts = []
-        self._stats_label.configure(text="")
-        self._status_var.set("正在生成故事大纲…")
-        self._progress.configure(mode="indeterminate")
-        self._progress.start()
-        slots = self._save_gen_params()
-        self._tabview.set(self._TAB_OUTLINE)
+        self._log(f"开始生成 {len(pending)} 个任务")
 
-        client = self._make_client()
-        ct = self._custom_templates
+        for task in pending:
+            self._launch_task(task)
 
-        def task():
-            self._log("开始生成故事大纲")
-            try:
-                msgs = generator.build_outline_messages(slots, ct)
-                parts: list[str] = []
+        self._refresh_task_list()
+        self._start_progress_polling()
+
+    def _run_task_pipeline(self, task: Task):
+        """单任务完整 3 阶段 pipeline（工作线程）。"""
+        s = task.state
+        label = task.summary
+        try:
+            cfg = self._llm_cfg
+            client = LLMClient(cfg["base_url"], cfg["api_key"], task.model)
+            ct = task.custom_templates
+            slots = task.slots
+
+            # 1. 大纲
+            s.phase = TaskPhase.OUTLINE
+            self._log(f"[{label}] 开始生成故事大纲")
+
+            msgs = generator.build_outline_messages(slots, ct)
+            parts: list[str] = []
+            for chunk in client.chat_stream(msgs):
+                parts.append(chunk)
+            outline = "".join(parts)
+            s.outline = outline
+            drama_title = templates.parse_drama_title(outline)
+            s.drama_title = drama_title
+            self._log(f"[{label}] 大纲完成"
+                       f"（{len(outline)}字，剧名：{drama_title or '未提取到'}）")
+
+            # 2. 角色视觉档案
+            s.phase = TaskPhase.PROFILE
+            self._log(f"[{label}] 开始生成角色视觉档案")
+
+            profile_slots = dict(slots, character_profile="")
+            profile_msgs = generator.build_character_profile_messages(
+                profile_slots, outline, ct)
+            profile_parts: list[str] = []
+            for chunk in client.chat_stream(profile_msgs):
+                profile_parts.append(chunk)
+            raw_profile = "".join(profile_parts)
+            parsed_profiles, narrator_voice = (
+                templates.parse_character_profiles(raw_profile))
+            character_profile = ("\n\n".join(parsed_profiles.values())
+                                  if parsed_profiles else raw_profile)
+            s.character_profile = character_profile
+            s.narrator_voice = narrator_voice
+            s.parsed_profiles = parsed_profiles
+            compact_profiles = templates.build_compact_profiles(parsed_profiles)
+            self._log(f"[{label}] 角色档案完成，共 {len(parsed_profiles)} 个角色")
+
+            # 3. 逐集分镜
+            s.phase = TaskPhase.EPISODES
+            episode_count = int(slots["episode_count"])
+            s.total_episodes = episode_count
+            ep_slots = dict(slots, character_profile=character_profile,
+                            narrator_voice=narrator_voice)
+
+            self._log(f"[{label}] 开始生成分镜脚本，共 {episode_count} 集")
+            for ep_num in range(1, episode_count + 1):
+                s.current_episode = ep_num
+                cur_slots = dict(ep_slots, current_episode=ep_num)
+
+                # Phase A: 剧情框架
+                msgs = generator.build_episode_narrative_messages(
+                    cur_slots, outline, ct)
+                parts = []
                 for chunk in client.chat_stream(msgs):
                     parts.append(chunk)
-                    self._append_text(self._outline_box, chunk)
-                self._outline_text = "".join(parts)
-                self.after(0, lambda: self._update_drama_title(self._outline_text))
-                self._log(f"大纲生成完成，共 {len(self._outline_text)} 字")
-                self.after(0, lambda: self._status_var.set("大纲生成完成"))
-            except LLMError as e:
-                self._log(f"大纲生成失败: {e}", "ERROR")
-                self.after(0, lambda: self._status_var.set("生成失败"))
-            finally:
-                self.after(0, self._finish_generation)
+                narrative = templates.parse_episode_narrative("".join(parts))
+                if not narrative.get('narrative'):
+                    narrative['narrative'] = "".join(parts)
+                if not narrative.get('header'):
+                    narrative['header'] = f"第{ep_num}集"
 
-        threading.Thread(target=task, daemon=True).start()
+                prefix = narrative.get('header', '')
+                scene = narrative.get('scene', '')
+                if scene:
+                    prefix += f"\n\n【场景】{scene}"
+                if compact_profiles:
+                    prefix += f"\n\n【视觉档案】\n{compact_profiles}"
+                prefix += "\n\n【分镜】"
 
-    def _on_generate_profile(self):
-        if not self._outline_text.strip():
-            messagebox.showwarning("提示", "请先生成故事大纲！", parent=self)
-            return
-        self._set_generating(True)
-        self._set_text(self._profile_box, "")
-        self._character_profile = ""
-        self._narrator_voice = ""
-        self._parsed_profiles = {}
-        self._status_var.set("正在生成角色视觉档案…")
-        self._progress.configure(mode="indeterminate")
-        self._progress.start()
-        self._tabview.set(self._TAB_PROFILE)
+                # Phase B: 逐镜生成
+                shots: list[str] = []
+                total_duration = 0
 
-        client = self._make_client()
-        slots = self._collect_slots()
-        outline = self._outline_text
-        ct = self._custom_templates
+                while (total_duration < templates.MIN_EPISODE_SECONDS
+                       and len(shots) < templates.MAX_SHOTS):
+                    shot_num = len(shots) + 1
+                    remaining = templates.MIN_EPISODE_SECONDS - total_duration
+                    is_last = remaining <= templates.MAX_SHOT_SECONDS
 
-        def task():
-            self._log("开始生成角色视觉档案")
-            try:
-                msgs = generator.build_character_profile_messages(slots, outline, ct)
-                parts: list[str] = []
-                for chunk in client.chat_stream(msgs):
-                    parts.append(chunk)
-                raw = "".join(parts)
-                self._apply_profile(raw)
-                n = len(self._parsed_profiles)
-                self._log(f"角色档案生成完成，共 {n} 个角色")
-                self.after(0, lambda: self._status_var.set("角色视觉档案生成完成"))
-            except LLMError as e:
-                self._log(f"角色档案生成失败: {e}", "ERROR")
-                self.after(0, lambda: self._status_var.set("生成失败"))
-            finally:
-                self.after(0, self._finish_generation)
+                    shot_msgs = generator.build_shot_messages(
+                        cur_slots, narrative, shots,
+                        shot_num, is_last, ct)
+                    shot_parts: list[str] = []
+                    for chunk in client.chat_stream(shot_msgs):
+                        shot_parts.append(chunk)
+                    shot_text = "".join(shot_parts).strip()
 
-        threading.Thread(target=task, daemon=True).start()
+                    durs = templates.parse_shot_durations(shot_text)
+                    dur = durs[0] if durs else 6
+                    shots.append(shot_text)
+                    total_duration += dur
 
-    def _apply_profile(self, raw: str):
-        parsed, narrator = templates.parse_character_profiles(raw)
-        self._narrator_voice = narrator
-        if parsed:
-            display_parts = list(parsed.values())
-            if narrator:
-                display_parts.append(narrator)
-            display = "\n\n".join(display_parts)
-            self._parsed_profiles = parsed
-            self._character_profile = "\n\n".join(parsed.values())
-        else:
-            self._parsed_profiles = {}
-            self._character_profile = raw
-            display = raw
-        self.after(0, lambda: self._set_text(self._profile_box, display))
+                    if is_last:
+                        break
 
-    def _on_generate_episodes(self):
-        if not self._outline_text.strip():
-            messagebox.showwarning("提示", "请先生成故事大纲！", parent=self)
-            return
-        self._set_generating(True)
-        self._set_text(self._episode_box, "")
-        self._episode_texts = []
-        self._stats_label.configure(text="")
-        slots = self._save_gen_params()
-        self._tabview.set(self._TAB_EPISODES)
+                # 组装该集
+                cliffhanger = narrative.get('cliffhanger', '')
+                ep_full = prefix
+                for shot in shots:
+                    ep_full += f"\n{shot.strip()}"
+                if cliffhanger:
+                    ep_full += f"\n\n【集末悬念】{cliffhanger}"
+                s.episode_texts.append(ep_full)
 
-        client = self._make_client()
-        outline = self._outline_text
-        ct = self._custom_templates
-        self._run_episodes_task(client, slots, outline, ct)
+                char_count = len(ep_full.strip())
+                over = " ⚠超5000" if char_count > 5000 else ""
+                self._log(f"[{label}] 第{ep_num}集完成："
+                          f"{len(shots)}个分镜，{total_duration}s，"
+                          f"{char_count}字{over}")
 
-    def _on_generate_all(self):
-        self._set_generating(True)
-        self._set_text(self._outline_box, "")
-        self._set_text(self._profile_box, "")
-        self._set_text(self._episode_box, "")
-        self._outline_text = ""
-        self._update_drama_title("")
-        self._character_profile = ""
-        self._narrator_voice = ""
-        self._parsed_profiles = {}
-        self._episode_texts = []
-        self._stats_label.configure(text="")
-        self._progress.configure(mode="indeterminate")
-        self._progress.start()
-        self._status_var.set("正在生成故事大纲…")
-        slots = self._save_gen_params()
-        self._tabview.set(self._TAB_OUTLINE)
+            # 保存文件
+            self._save_task_output(task)
+            s.status = TaskStatus.COMPLETED
+            self._log(f"[{label}] 全部完成！")
 
-        client = self._make_client()
-        ct = self._custom_templates
+        except LLMError as e:
+            s.status = TaskStatus.FAILED
+            s.error = str(e)
+            self._log(f"[{label}] 生成失败: {e}", "ERROR")
+        except Exception as e:
+            s.status = TaskStatus.FAILED
+            s.error = str(e)
+            self._log(f"[{label}] 未知错误: {e}", "ERROR")
+        finally:
+            with self._done_lock:
+                self._done_count += 1
+                all_done = not any(
+                    t.state.status == TaskStatus.RUNNING
+                    for t in self._tasks)
+            if all_done:
+                self.after(0, self._on_all_tasks_done)
 
-        def _fail(e: Exception):
-            messagebox.showerror("生成失败", str(e), parent=self)
-            self._status_var.set("生成失败")
-            self._finish_generation()
+    def _save_task_output(self, task: Task):
+        """保存任务输出到文件。"""
+        s = task.state
+        title = s.drama_title or task.summary
+        dir_name = safe_filename(title)
 
-        def task():
-            try:
-                # 1. 大纲
-                self._log("开始一键生成全部")
-                self._log("开始生成故事大纲")
-                msgs = generator.build_outline_messages(slots, ct)
-                parts: list[str] = []
-                for chunk in client.chat_stream(msgs):
-                    parts.append(chunk)
-                    self._append_text(self._outline_box, chunk)
-                self._outline_text = "".join(parts)
-                outline = self._outline_text
-                self.after(0, lambda: self._update_drama_title(outline))
-                self._log(f"大纲生成完成，共 {len(outline)} 字")
+        # 重名处理
+        out_dir = OUTPUT_DIR / dir_name
+        if out_dir.exists():
+            suffix = 2
+            while (OUTPUT_DIR / f"{dir_name}({suffix})").exists():
+                suffix += 1
+            out_dir = OUTPUT_DIR / f"{dir_name}({suffix})"
 
-                # 2. 角色视觉档案
-                self._log("开始生成角色视觉档案")
-                self.after(0, lambda: self._status_var.set("正在生成角色视觉档案…"))
-                self.after(0, lambda: self._tabview.set(self._TAB_PROFILE))
-                profile_slots = dict(slots, character_profile="")
-                profile_msgs = generator.build_character_profile_messages(
-                    profile_slots, outline, ct)
-                profile_parts: list[str] = []
-                for chunk in client.chat_stream(profile_msgs):
-                    profile_parts.append(chunk)
-                self._apply_profile("".join(profile_parts))
-                n = len(self._parsed_profiles)
-                self._log(f"角色档案生成完成，共 {n} 个角色")
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-                # 3. 各集
-                ep_slots = dict(slots, character_profile=self._character_profile)
-                self.after(0, self._reset_progress)
-                self.after(0, lambda: self._tabview.set(self._TAB_EPISODES))
-                self.after(0, lambda: self._run_episodes_task(
-                    client, ep_slots, outline, ct))
-            except LLMError as e:
-                self._log(f"一键生成失败: {e}", "ERROR")
-                self.after(0, lambda: _fail(e))
+        # 大纲
+        (out_dir / "大纲.txt").write_text(s.outline, encoding="utf-8")
 
-        threading.Thread(target=task, daemon=True).start()
+        # 角色视觉档案
+        profile_text = s.character_profile
+        if s.narrator_voice:
+            profile_text += "\n\n" + s.narrator_voice
+        (out_dir / "角色视觉档案.txt").write_text(
+            profile_text, encoding="utf-8")
 
-    def _run_episodes_task(self, client: LLMClient, slots: dict,
-                           outline: str, ct: dict):
-        episode_count = int(slots["episode_count"])
-        parsed_profiles = dict(self._parsed_profiles)
-        compact_profiles = templates.build_compact_profiles(parsed_profiles)
-        self._episode_texts = []
-        results: list[tuple[int, int, int]] = []  # (ep, chars, duration)
+        # 分镜脚本
+        script_name = safe_filename(s.drama_title) if s.drama_title else "分镜脚本"
+        script_path = out_dir / f"{script_name}.txt"
+        with open(script_path, "w", encoding="utf-8") as fh:
+            for i, ep_text in enumerate(s.episode_texts):
+                cc = len(ep_text.strip())
+                over = " ⚠超限" if cc > 5000 else ""
+                fh.write(f"--- 第 {i + 1} 集（{cc} 字符{over}）---\n\n")
+                fh.write(ep_text.strip() + "\n\n")
 
-        def task():
-            try:
-                self._log(f"开始生成分镜脚本，共 {episode_count} 集")
-                for ep_num in range(1, episode_count + 1):
-                    ep_slots = dict(slots, current_episode=ep_num)
+        self._log(f"[{task.summary}] 文件已保存到 {out_dir}")
 
-                    # ---- Phase A: 剧情框架 ----
-                    self._log(f"第 {ep_num}/{episode_count} 集 · 生成剧情框架")
-                    self.after(0, lambda n=ep_num:
-                               self._status_var.set(
-                                   f"第 {n}/{episode_count} 集 · 剧情框架"))
+    # ==================================================================
+    # 进度轮询
+    # ==================================================================
 
-                    msgs = generator.build_episode_narrative_messages(
-                        ep_slots, outline, ct)
-                    parts: list[str] = []
-                    for chunk in client.chat_stream(msgs):
-                        parts.append(chunk)
-                    narrative = templates.parse_episode_narrative(
-                        "".join(parts))
+    def _start_progress_polling(self):
+        """每 500ms 刷新所有 TaskCard 显示。"""
+        for task_id, card in self._task_cards.items():
+            card.update_display()
 
-                    # 兜底：解析失败时用原始文本
-                    if not narrative.get('narrative'):
-                        narrative['narrative'] = "".join(parts)
-                    if not narrative.get('header'):
-                        narrative['header'] = f"第{ep_num}集"
+        if self._generating:
+            self._poll_id = self.after(500, self._start_progress_polling)
 
-                    # 先显示框架 + 精简视觉档案 + 分镜标题
-                    prefix = narrative.get('header', '')
-                    scene = narrative.get('scene', '')
-                    if scene:
-                        prefix += f"\n\n【场景】{scene}"
-                    if compact_profiles:
-                        prefix += f"\n\n【视觉档案】\n{compact_profiles}"
-                    prefix += "\n\n【分镜】"
-                    self._append_text(self._episode_box, prefix)
+    def _on_all_tasks_done(self):
+        """所有任务完成后的回调。"""
+        self._generating = False
+        if self._poll_id:
+            self.after_cancel(self._poll_id)
+            self._poll_id = None
 
-                    # ---- Phase B: 逐镜生成 ----
-                    shots: list[str] = []
-                    total_duration = 0
+        # 最终刷新一次显示
+        for card in self._task_cards.values():
+            card.update_display()
 
-                    while (total_duration < templates.MIN_EPISODE_SECONDS
-                           and len(shots) < templates.MAX_SHOTS):
-                        shot_num = len(shots) + 1
-                        remaining = (templates.MIN_EPISODE_SECONDS
-                                     - total_duration)
-                        is_last = remaining <= templates.MAX_SHOT_SECONDS
+        self._update_queue_count()
 
-                        self.after(0, lambda n=ep_num, s=shot_num:
-                                   self._status_var.set(
-                                       f"第 {n}/{episode_count} 集"
-                                       f" · 分镜 {s}"))
+        completed = sum(1 for t in self._tasks
+                        if t.state.status == TaskStatus.COMPLETED)
+        failed = sum(1 for t in self._tasks
+                     if t.state.status == TaskStatus.FAILED)
+        total = len(self._tasks)
 
-                        shot_msgs = generator.build_shot_messages(
-                            ep_slots, narrative, shots,
-                            shot_num, is_last, ct)
+        msg = f"生成完成！成功 {completed}/{total}"
+        if failed:
+            msg += f"，失败 {failed}"
+        self._log(msg)
 
-                        shot_parts: list[str] = []
-                        for chunk in client.chat_stream(shot_msgs):
-                            shot_parts.append(chunk)
-                        shot_text = "".join(shot_parts).strip()
+        # 打开输出目录
+        if completed > 0:
+            if sys.platform == "win32":
+                os.startfile(OUTPUT_DIR)
+            elif sys.platform == "darwin":
+                os.system(f'open "{OUTPUT_DIR}"')
 
-                        # 解析时长
-                        durs = templates.parse_shot_durations(shot_text)
-                        dur = durs[0] if durs else 6
-
-                        shots.append(shot_text)
-                        total_duration += dur
-
-                        self._log(f"第 {ep_num} 集 · 分镜 {shot_num} 完成"
-                                  f"（{dur}s，累计 {total_duration}s）")
-                        self._append_text(
-                            self._episode_box, f"\n{shot_text}")
-
-                        if is_last:
-                            break
-
-                    # ---- 集末悬念 + 分隔线 ----
-                    cliffhanger = narrative.get('cliffhanger', '')
-                    tail = ""
-                    if cliffhanger:
-                        tail += f"\n\n【集末悬念】{cliffhanger}"
-                    tail += f"\n\n{'─' * 30}\n\n"
-                    self._append_text(self._episode_box, tail)
-
-                    # 组装该集完整文本（与 UI 显示一致，用于逐集复制）
-                    ep_full = prefix
-                    for shot in shots:
-                        ep_full += f"\n{shot.strip()}"
-                    if cliffhanger:
-                        ep_full += f"\n\n【集末悬念】{cliffhanger}"
-                    self._episode_texts.append(ep_full)
-
-                    char_count = len(ep_full.strip())
-                    results.append((ep_num, char_count, total_duration))
-                    over = " ⚠超5000" if char_count > 5000 else ""
-                    self._log(f"第 {ep_num} 集完成："
-                              f"{len(shots)} 个分镜，{total_duration}s，"
-                              f"{char_count} 字{over}")
-
-                    pct = ep_num / episode_count
-                    self.after(0, lambda p=pct: self._progress.set(p))
-
-                self._log(f"全部 {episode_count} 集生成完成")
-                self.after(0, lambda: self._on_episodes_done(results))
-            except LLMError as e:
-                self._log(f"分镜脚本生成失败: {e}", "ERROR")
-                self.after(0, lambda: self._status_var.set("生成失败"))
-            finally:
-                self.after(0, lambda: self._set_generating(False))
-
-        threading.Thread(target=task, daemon=True).start()
-
-    def _on_episodes_done(self, results: list):
-        self._status_var.set("分镜脚本生成完成")
-        if not results:
-            return
-        counts = [c for _, c, _ in results]
-        durations = [d for _, _, d in results]
-        avg_c = sum(counts) / len(counts)
-        avg_d = sum(durations) / len(durations)
-        over_limit = sum(1 for c in counts if c > 5000)
-        stats = (f"共{len(results)}集 | 平均{round(avg_c)}字/集"
-                 f" | 平均{round(avg_d)}s/集"
-                 f" | 字数: {min(counts)}~{max(counts)}")
-        if over_limit:
-            stats += f" | ⚠ {over_limit}集超5000字符"
-        self._stats_label.configure(
-            text=stats,
-            text_color=self._C_RED if over_limit else "gray")
+            messagebox.showinfo(
+                "生成完成", f"{msg}\n\n输出目录：{OUTPUT_DIR}", parent=self)
 
     # ==================================================================
     # 模板编辑器
@@ -1127,94 +1146,3 @@ class App(ctk.CTk):
             self._custom_templates = result
             config.save_custom_templates(result)
         TemplateEditorDialog(self, self._custom_templates, on_save)
-
-    # ==================================================================
-    # 导出
-    # ==================================================================
-
-    def _copy_profile(self):
-        content = self._profile_box.get("0.0", "end").strip()
-        if not content:
-            messagebox.showinfo("提示", "视觉档案为空，请先生成。", parent=self)
-            return
-        self.clipboard_clear()
-        self.clipboard_append(content)
-        messagebox.showinfo("复制成功", "完整视觉档案已复制到剪贴板。", parent=self)
-
-    def _copy_single_episode(self):
-        if not self._episode_texts:
-            messagebox.showinfo("提示", "内容为空，请先生成。", parent=self)
-            return
-        try:
-            ep_num = int(self._copy_ep_var.get())
-        except (ValueError, TypeError):
-            messagebox.showwarning("提示", "请输入有效的集号。", parent=self)
-            return
-        if ep_num < 1 or ep_num > len(self._episode_texts):
-            messagebox.showwarning(
-                "提示", f"集号范围：1~{len(self._episode_texts)}",
-                parent=self)
-            return
-        text = self._episode_texts[ep_num - 1]
-        char_count = len(text.strip())
-        self.clipboard_clear()
-        self.clipboard_append(text)
-        warning = ""
-        if char_count > 5000:
-            warning = f"\n\n⚠ 该集 {char_count} 字符，超出小云雀 5000 字符限制！"
-        messagebox.showinfo(
-            "复制成功",
-            f"第 {ep_num} 集已复制（{char_count} 字符）。{warning}",
-            parent=self)
-
-    def _copy_episodes(self):
-        content = self._episode_box.get("0.0", "end").strip()
-        if not content:
-            messagebox.showinfo("提示", "内容为空，请先生成。", parent=self)
-            return
-        self.clipboard_clear()
-        self.clipboard_append(content)
-        messagebox.showinfo("复制成功", "已复制到剪贴板。", parent=self)
-
-    def _export_txt(self):
-        if not self._episode_texts:
-            messagebox.showinfo("提示", "内容为空，请先生成。", parent=self)
-            return
-        path = filedialog.asksaveasfilename(
-            parent=self,
-            defaultextension=".txt",
-            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
-            initialfile="episode_prompts.txt",
-            title="导出提示词",
-        )
-        if not path:
-            return
-        try:
-            with open(path, "w", encoding="utf-8") as fh:
-                # 剧名
-                drama_title = self._drama_title_var.get()
-                if drama_title:
-                    fh.write(f"剧名：{drama_title}\n\n")
-
-                # 完整视觉档案（供参考）
-                if self._character_profile:
-                    fh.write("=" * 40 + "\n")
-                    fh.write("【完整视觉档案】（供参考留档）\n")
-                    fh.write("=" * 40 + "\n\n")
-                    fh.write(self._character_profile + "\n")
-                    if self._narrator_voice:
-                        fh.write("\n" + self._narrator_voice + "\n")
-                    fh.write("\n")
-
-                # 每集脚本
-                fh.write("=" * 40 + "\n")
-                fh.write("【分镜脚本】（逐集粘贴到小云雀）\n")
-                fh.write("=" * 40 + "\n\n")
-                for i, ep_text in enumerate(self._episode_texts):
-                    cc = len(ep_text.strip())
-                    over = " ⚠超限" if cc > 5000 else ""
-                    fh.write(f"--- 第 {i + 1} 集（{cc} 字符{over}）---\n\n")
-                    fh.write(ep_text.strip() + "\n\n")
-            messagebox.showinfo("导出成功", f"已保存到：\n{path}", parent=self)
-        except OSError as e:
-            messagebox.showerror("导出失败", str(e), parent=self)
