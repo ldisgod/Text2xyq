@@ -569,8 +569,19 @@ class App(ctk.CTk):
     # ==================================================================
 
     def _build_right(self, parent):
+        # 剧名标签
+        self._drama_title_var = ctk.StringVar(value="")
+        self._drama_title_lbl = ctk.CTkLabel(
+            parent, textvariable=self._drama_title_var,
+            font=ctk.CTkFont(size=18, weight="bold"),
+            anchor="w",
+        )
+        # 初始隐藏，有剧名时再显示
+        parent.grid_rowconfigure(0, weight=0)
+        parent.grid_rowconfigure(1, weight=1)
+
         tabview = ctk.CTkTabview(parent, corner_radius=8)
-        tabview.grid(row=0, column=0, sticky="nsew")
+        tabview.grid(row=1, column=0, sticky="nsew")
 
         tabview.add(self._TAB_OUTLINE)
         tabview.add(self._TAB_PROFILE)
@@ -754,6 +765,20 @@ class App(ctk.CTk):
         self._log_error_count = 0
 
     # ==================================================================
+    # 剧名
+    # ==================================================================
+
+    def _update_drama_title(self, outline: str):
+        """从大纲中解析剧名并更新 UI。"""
+        title = templates.parse_drama_title(outline)
+        self._drama_title_var.set(title)
+        if title:
+            self._drama_title_lbl.grid(
+                row=0, column=0, sticky="w", padx=8, pady=(4, 0))
+        else:
+            self._drama_title_lbl.grid_forget()
+
+    # ==================================================================
     # 文本操作
     # ==================================================================
 
@@ -782,6 +807,7 @@ class App(ctk.CTk):
         self._set_text(self._profile_box, "")
         self._set_text(self._episode_box, "")
         self._outline_text = ""
+        self._update_drama_title("")
         self._character_profile = ""
         self._narrator_voice = ""
         self._parsed_profiles = {}
@@ -805,6 +831,7 @@ class App(ctk.CTk):
                     parts.append(chunk)
                     self._append_text(self._outline_box, chunk)
                 self._outline_text = "".join(parts)
+                self.after(0, lambda: self._update_drama_title(self._outline_text))
                 self._log(f"大纲生成完成，共 {len(self._outline_text)} 字")
                 self.after(0, lambda: self._status_var.set("大纲生成完成"))
             except LLMError as e:
@@ -892,6 +919,7 @@ class App(ctk.CTk):
         self._set_text(self._profile_box, "")
         self._set_text(self._episode_box, "")
         self._outline_text = ""
+        self._update_drama_title("")
         self._character_profile = ""
         self._narrator_voice = ""
         self._parsed_profiles = {}
@@ -923,6 +951,7 @@ class App(ctk.CTk):
                     self._append_text(self._outline_box, chunk)
                 self._outline_text = "".join(parts)
                 outline = self._outline_text
+                self.after(0, lambda: self._update_drama_title(outline))
                 self._log(f"大纲生成完成，共 {len(outline)} 字")
 
                 # 2. 角色视觉档案
@@ -1162,6 +1191,11 @@ class App(ctk.CTk):
             return
         try:
             with open(path, "w", encoding="utf-8") as fh:
+                # 剧名
+                drama_title = self._drama_title_var.get()
+                if drama_title:
+                    fh.write(f"剧名：{drama_title}\n\n")
+
                 # 完整视觉档案（供参考）
                 if self._character_profile:
                     fh.write("=" * 40 + "\n")
