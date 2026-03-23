@@ -18,6 +18,7 @@ _LLM_DEFAULTS: dict = {
 
 _GENERATION_DEFAULTS: dict = {
     "episode_count": 20,
+    "episode_duration": 90,
     "chars_min": 270,
     "chars_max": 330,
     "visual_style": "写实",

@@ -338,9 +338,10 @@ def build_context(raw_slots: dict) -> dict:
 
     # 时长计算
     episodes = int(ctx.get("episode_count", 20))
-    ctx["episode_duration_seconds"] = MIN_EPISODE_SECONDS
+    ep_dur = int(ctx.get("episode_duration", MIN_EPISODE_SECONDS))
+    ctx["episode_duration_seconds"] = ep_dur
 
-    total_secs = MIN_EPISODE_SECONDS * episodes
+    total_secs = ep_dur * episodes
     mins, secs = divmod(total_secs, 60)
     ctx["total_duration_display"] = f"{mins}分{secs}秒" if mins else f"{secs}秒"
 

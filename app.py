@@ -631,6 +631,20 @@ class App(ctk.CTk):
             side="left", padx=4)
         self._ep_entry.bind("<KeyRelease>", lambda _: self._update_duration())
 
+        ctk.CTkLabel(f, text="每集时长", font=ctk.CTkFont(size=12),
+                      anchor="w").pack(fill="x", padx=pad, pady=(4, 0))
+        self._ep_duration_var = ctk.StringVar(
+            value=str(self._gen_params.get("episode_duration", 90)))
+        dur_input_frame = ctk.CTkFrame(f, fg_color="transparent")
+        dur_input_frame.pack(fill="x", padx=pad, pady=(2, 4))
+        self._ep_dur_entry = ctk.CTkEntry(
+            dur_input_frame, textvariable=self._ep_duration_var, width=80)
+        self._ep_dur_entry.pack(side="left")
+        ctk.CTkLabel(dur_input_frame, text="秒",
+                     font=ctk.CTkFont(size=12)).pack(side="left", padx=4)
+        self._ep_dur_entry.bind("<KeyRelease>",
+                                lambda _: self._update_duration())
+
         self._duration_label = ctk.CTkLabel(
             f, text="", font=ctk.CTkFont(size=11), text_color="gray",
             anchor="w")
@@ -650,12 +664,15 @@ class App(ctk.CTk):
             eps = int(self._episode_var.get())
         except (ValueError, TypeError):
             return
-        per_ep = templates.MIN_EPISODE_SECONDS
+        try:
+            per_ep = int(self._ep_duration_var.get())
+        except (ValueError, TypeError):
+            per_ep = templates.MIN_EPISODE_SECONDS
         total = per_ep * eps
         mins, secs = divmod(total, 60)
         total_str = f"{mins}分{secs}秒" if mins else f"{secs}秒"
         self._duration_label.configure(
-            text=f"≥ {per_ep}秒/集 · 总时长 ≥ {total_str}")
+            text=f"{per_ep}秒/集 · 总时长 ≈ {total_str}")
 
     # ---- 风格设置 ----
 
@@ -744,6 +761,7 @@ class App(ctk.CTk):
             "character_type": "、".join(selected_chars),
             "plot": self._plot_var.get(),
             "episode_count": int(self._episode_var.get()),
+            "episode_duration": int(self._ep_duration_var.get()),
             "visual_style": self._visual_var.get(),
             "aspect_ratio": self._ratio_var.get(),
             "mood": self._mood_var.get(),
@@ -994,10 +1012,12 @@ class App(ctk.CTk):
                 shots: list[str] = []
                 total_duration = 0
 
-                while (total_duration < templates.MIN_EPISODE_SECONDS
+                target_duration = int(cur_slots.get(
+                    "episode_duration", templates.MIN_EPISODE_SECONDS))
+                while (total_duration < target_duration
                        and len(shots) < templates.MAX_SHOTS):
                     shot_num = len(shots) + 1
-                    remaining = templates.MIN_EPISODE_SECONDS - total_duration
+                    remaining = target_duration - total_duration
                     is_last = remaining <= templates.MAX_SHOT_SECONDS
 
                     shot_msgs = generator.build_shot_messages(
